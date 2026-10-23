@@ -74,6 +74,7 @@ paddlex-ocr-web/
 │   ├── admin.html                   # 后台管理页
 │   └── assets/
 │       ├── app.css  app.js  admin.js  favicon.svg
+│       └── swagger/                 # 内置 swagger-ui（离线 /api/docs 用，不走 CDN）
 ├── scripts/                         # 部署与运维脚本
 │   ├── env.sh                       # 公共函数（架构识别/配置读取/日志着色）
 │   ├── preflight.sh                 # 环境自检
@@ -92,7 +93,7 @@ paddlex-ocr-web/
 ├── deploy/
 │   └── systemd/paddlex-ocr-web.service  # systemd 单元示例（离线环境变量已配好）
 ├── tests/                           # 无需模型的自动化测试
-│   ├── e2e.sh                       # 端到端接口测试（53 项，MOCK 引擎）
+│   ├── e2e.sh                       # 端到端接口测试（60 项，MOCK 引擎）
 │   ├── test_devices.py              # 设备解析单测（29 项）
 │   ├── test_gpu_deps.py             # GPU 依赖闭包单测（10 项）
 │   ├── test_memguard.py             # 内存保护单测（18 项）
@@ -862,6 +863,12 @@ docker stats --no-stream paddlex-ocr-web
 
 ## 8. 接口说明（便于集成）
 
+> **在线文档：`http://<服务器IP>:8000/api/docs`（Swagger UI），`/api/openapi.json` 是原始 spec。**
+> 完全离线可用：swagger-ui 的 `swagger-ui-bundle.js`（1.6 MB）与 `swagger-ui.css`（180 KB）
+> 已内置在 `frontend/assets/swagger/`，由后端用本地 URL 渲染（见 `backend/main.py` 的 `/api/docs`）。
+> FastAPI 自带的文档页固定从 `cdn.jsdelivr.net` 拉这两个文件，在内网环境会 404、页面一片空白，
+> 所以本项目把 `docs_url` 关掉后自行注册了离线版；升级 swagger-ui 见该目录下的 `VERSION`。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/tasks` | multipart：`files`（可多个）+ `params`（JSON 字符串）+ `pipeline`（产线 id，可空）；返回 `batch_id` 与任务列表 |
@@ -1232,7 +1239,7 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 | 仅测 Web 链路 | `.venv/bin/python scripts/smoke_test.py --mock --all` | 同上但不加载模型（秒级） | 否 |
 
 `tests/e2e.sh` 会在 8123 端口拉起一个 MOCK 服务（使用临时数据目录，不污染 `data/`），
-执行完自动关闭。最近一次执行结果：**53 项全部通过**（含多产线 6 项、会话隔离 10 项、设备 4 项）
+执行完自动关闭。最近一次执行结果：**60 项全部通过**（含多产线 6 项、会话隔离 10 项、设备 4 项、离线文档 7 项）
 （新浏览器列表为空、跨会话取结果/导出/取消/删除一律 404、篡改 Cookie 无数据泄露、
 管理员可见全部并带会话标识）。
 

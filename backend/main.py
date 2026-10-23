@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -99,7 +99,10 @@ def create_app() -> FastAPI:
         version=__version__,
         description="离线 OCR + 表格识别（PaddleX PP-StructureV3）",
         root_path=str(settings.get("server.root_path", "") or ""),
-        docs_url="/api/docs",
+        # 关闭 FastAPI 自带的 /api/docs：它固定从 cdn.jsdelivr.net 拉
+        # swagger-ui-bundle.js / swagger-ui.css，离线环境必然 404、页面全白。
+        # 下面用本地资源重新注册 /api/docs。
+        docs_url=None,
         redoc_url=None,
         openapi_url="/api/openapi.json",
         lifespan=lifespan,
@@ -167,6 +170,55 @@ def create_app() -> FastAPI:
     assets_dir = frontend / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    # ------------------------------------------------------------- API 文档（离线）
+    # 用随包的 swagger-ui 资源渲染，不依赖任何 CDN：
+    #   frontend/assets/swagger/swagger-ui-bundle.js  (约 1.6 MB)
+    #   frontend/assets/swagger/swagger-ui.css        (约 180 KB)
+    swagger_dir = assets_dir / "swagger"
+    swagger_js = swagger_dir / "swagger-ui-bundle.js"
+    swagger_css = swagger_dir / "swagger-ui.css"
+
+    @app.get("/api/docs", include_in_schema=False)
+    async def api_docs(request: Request):  # noqa: ANN201
+        if not (swagger_js.is_file() and swagger_css.is_file()):
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "Swagger UI 静态资源缺失（离线部署不应访问 CDN）："
+                    f"需要 {swagger_js} 与 {swagger_css}。"
+                    "请确认离线包 frontend/assets/swagger/ 完整，或执行 "
+                    "scripts/make_offline_bundle.sh 重新打包"
+                },
+            )
+        # 反向代理子路径（server.root_path）下也要能取到资源
+        prefix = str(request.scope.get("root_path", "") or "").rstrip("/")
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{app.title} · API 文档</title>
+  <link rel="icon" href="{prefix}/assets/favicon.svg" />
+  <link rel="stylesheet" href="{prefix}/assets/swagger/swagger-ui.css" />
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="{prefix}/assets/swagger/swagger-ui-bundle.js"></script>
+<script>
+  window.ui = SwaggerUIBundle({{
+    url: "{prefix}/api/openapi.json",
+    dom_id: "#swagger-ui",
+    layout: "BaseLayout",
+    deepLinking: true,
+    showExtensions: true,
+    showCommonExtensions: true,
+    presets: [SwaggerUIBundle.presets.apis],
+  }});
+</script>
+</body>
+</html>"""
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     def _page(name: str) -> FileResponse:
         path = frontend / name

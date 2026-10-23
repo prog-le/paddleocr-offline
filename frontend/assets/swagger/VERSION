@@ -1,0 +1,13 @@
+swagger-ui-dist 5.34.0
+来源：https://registry.npmjs.org/swagger-ui-dist/-/swagger-ui-dist-5.34.0.tgz
+文件：swagger-ui-bundle.js、swagger-ui.css、LICENSE、NOTICE
+
+为什么随包内置（不从 CDN 加载）：
+  本项目是**完全离线**部署，FastAPI 默认的 /api/docs 会从
+  https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/ 拉取 swagger-ui-bundle.js 与
+  swagger-ui.css，在无外网/内网环境里必然 404，页面一片空白。
+  因此把这两个文件vendor 到 frontend/assets/swagger/，由后端用本地 URL 渲染。
+
+升级方式：
+  1) 重新下载 swagger-ui-dist 的 tarball，替换上面两个文件与本文件里的版本号；
+  2) 重启服务，打开 /api/docs 验证 "Try it out" 可用。

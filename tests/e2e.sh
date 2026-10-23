@@ -177,6 +177,26 @@ done
 curl -sS "$BASE/" | grep -q "PaddleX OCR" && pass "首页包含标题" || bad "首页内容异常"
 curl -sS "$BASE/assets/app.js" | grep -q "function buildTable" && pass "前端脚本可访问" || bad "前端脚本异常"
 
+say "API 文档（/api/docs 必须离线可用）"
+CODE="$(curl -sS -o "$TMP/docs.html" -w '%{http_code}' "$BASE/api/docs")"
+[ "$CODE" = "200" ] && pass "GET /api/docs -> 200" || bad "GET /api/docs -> $CODE"
+# 页面里不能出现 CDN 地址（离线环境会 404，页面一片空白）
+if grep -qE "cdn\.jsdelivr|unpkg\.com|cdnjs" "$TMP/docs.html"; then
+  bad "文档页仍引用 CDN 资源"
+else
+  pass "文档页不引用任何 CDN"
+fi
+grep -q "/assets/swagger/swagger-ui-bundle.js" "$TMP/docs.html" \
+  && pass "文档页引用本地 swagger-ui-bundle.js" || bad "文档页未引用本地 JS"
+grep -q "/assets/swagger/swagger-ui.css" "$TMP/docs.html" \
+  && pass "文档页引用本地 swagger-ui.css" || bad "文档页未引用本地 CSS"
+# 两个静态资源必须能真正取到（Content-Type 与体积都要对）
+JS_SIZE="$(curl -sS -o /dev/null -w '%{size_download}' "$BASE/assets/swagger/swagger-ui-bundle.js")"
+[ "${JS_SIZE:-0}" -gt 500000 ] && pass "swagger-ui-bundle.js 可下载（${JS_SIZE} B）" || bad "swagger-ui-bundle.js 异常（${JS_SIZE} B）"
+CSS_SIZE="$(curl -sS -o /dev/null -w '%{size_download}' "$BASE/assets/swagger/swagger-ui.css")"
+[ "${CSS_SIZE:-0}" -gt 50000 ] && pass "swagger-ui.css 可下载（${CSS_SIZE} B）" || bad "swagger-ui.css 异常（${CSS_SIZE} B）"
+curl -sS "$BASE/api/openapi.json" | grep -q '"openapi"' && pass "OpenAPI JSON 可访问" || bad "OpenAPI JSON 异常"
+
 say "在线配置：修改上传限额并验证生效"
 CODE="$(curl -sS -b "$COOKIE" -o "$TMP/cfg.json" -w '%{http_code}' -X PATCH "$BASE/api/admin/config" \
   -H 'Content-Type: application/json' \
