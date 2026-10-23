@@ -1,0 +1,121 @@
+{
+  "generated_at": "2026-10-23 06:44:53",
+  "paddle": "3.3.1",
+  "paddlex": "3.7.2",
+  "device": "cpu",
+  "pipelines": [
+    "OCR",
+    "PP-StructureV3-full",
+    "PP-StructureV3",
+    "table_recognition_v2",
+    "OCR"
+  ],
+  "pipeline_config": null,
+  "model_home": "models/paddlex_home",
+  "model_count": 17,
+  "total_mb": 2356.1,
+  "models": [
+    {
+      "name": "PP-DocBlockLayout",
+      "size_mb": 123.9,
+      "files": 6,
+      "digest": "22af15cda5581d01"
+    },
+    {
+      "name": "PP-DocLayout_plus-L",
+      "size_mb": 124.4,
+      "files": 3,
+      "digest": "4affef4fdbbf8e89"
+    },
+    {
+      "name": "PP-FormulaNet_plus-L",
+      "size_mb": 697.6,
+      "files": 3,
+      "digest": "f8e74463009f6901"
+    },
+    {
+      "name": "PP-LCNet_x1_0_doc_ori",
+      "size_mb": 6.6,
+      "files": 7,
+      "digest": "0fddf870a7dafd02"
+    },
+    {
+      "name": "PP-LCNet_x1_0_table_cls",
+      "size_mb": 6.5,
+      "files": 3,
+      "digest": "e8c0fdb2fb9d5dc8"
+    },
+    {
+      "name": "PP-LCNet_x1_0_textline_ori",
+      "size_mb": 6.5,
+      "files": 5,
+      "digest": "93328a112cd342c6"
+    },
+    {
+      "name": "PP-OCRv4_server_seal_det",
+      "size_mb": 109.0,
+      "files": 6,
+      "digest": "78127a7f39615693"
+    },
+    {
+      "name": "PP-OCRv5_server_det",
+      "size_mb": 84.2,
+      "files": 3,
+      "digest": "5c3720b88395f0ab"
+    },
+    {
+      "name": "PP-OCRv5_server_rec",
+      "size_mb": 80.9,
+      "files": 3,
+      "digest": "4dcad6791b532305"
+    },
+    {
+      "name": "PP-OCRv6_medium_det",
+      "size_mb": 59.4,
+      "files": 3,
+      "digest": "ecbca725d12a38eb"
+    },
+    {
+      "name": "PP-OCRv6_medium_rec",
+      "size_mb": 73.3,
+      "files": 3,
+      "digest": "56a9ec7281b5ee4e"
+    },
+    {
+      "name": "RT-DETR-L_wired_table_cell_det",
+      "size_mb": 123.9,
+      "files": 3,
+      "digest": "a2aefc5977638a57"
+    },
+    {
+      "name": "RT-DETR-L_wireless_table_cell_det",
+      "size_mb": 123.9,
+      "files": 3,
+      "digest": "853ec9900cf91966"
+    },
+    {
+      "name": "SLANeXt_wired",
+      "size_mb": 348.8,
+      "files": 3,
+      "digest": "38341134f801be02"
+    },
+    {
+      "name": "SLANeXt_wireless",
+      "size_mb": 348.8,
+      "files": 3,
+      "digest": "7a4d42f7c3a0d216"
+    },
+    {
+      "name": "SLANet_plus",
+      "size_mb": 7.6,
+      "files": 3,
+      "digest": "083a32a1b4ccd72b"
+    },
+    {
+      "name": "UVDoc",
+      "size_mb": 30.8,
+      "files": 3,
+      "digest": "c87c667a88da3b9f"
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>后台管理 · PaddleX OCR</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="2" y="6" width="28" height="20" rx="3" fill="#1d4ed8"/>
+        <path d="M8 12h6M8 16h10M8 20h8" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+        <rect x="19" y="11" width="6" height="10" rx="1" fill="#93c5fd"/>
+      </svg>
+      <div class="brand-text">
+        <strong>PaddleX OCR · 后台管理</strong>
+        <span>服务状态 / 任务队列 / 统计 / 日志</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="pill" id="svc-pill">连接中…</span>
+      <a class="link" href="/">返回前台</a>
+      <button class="btn ghost small" id="btn-logout" hidden>退出登录</button>
+    </div>
+  </header>
+
+  <!-- 登录 -->
+  <div id="login-view" hidden>
+    <form class="login-box" id="login-form" autocomplete="off">
+      <h1>管理员登录</h1>
+      <p class="sub">仅后台管理需要登录，前台识别页面对内网开放</p>
+      <div class="field">
+        <label for="username">用户名</label>
+        <input id="username" name="username" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn primary" type="submit" style="width:100%;justify-content:center">登录</button>
+      <p class="note">默认账号见 config/config.yaml（server.admin_username / admin_password），生产环境请务必修改。</p>
+    </form>
+  </div>
+
+  <!-- 控制台 -->
+  <div id="dash-view" class="admin-wrap" hidden>
+    <div class="stat-grid" id="stat-grid"></div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head">
+        <h2>服务控制</h2>
+        <span class="hint" id="svc-hint"></span>
+      </div>
+      <div class="card-body">
+        <div class="toolbar" style="margin:0">
+          <button class="btn small" id="btn-pause">暂停接单</button>
+          <button class="btn small" id="btn-resume" hidden>恢复接单</button>
+          <button class="btn small" id="btn-warmup">预热模型</button>
+          <button class="btn small" id="btn-reload">重载模型</button>
+          <button class="btn small" id="btn-cleanup">清理过期任务</button>
+          <button class="btn small" id="btn-refresh">刷新数据</button>
+          <label class="switch" style="margin-left:auto">
+            <input type="checkbox" id="auto-refresh" checked>
+            <span class="track"><span class="knob"></span></span>
+            <span class="switch-label">自动刷新（5s）</span>
+          </label>
+        </div>
+
+        <div class="toolbar" style="margin:12px 0 0;flex-wrap:wrap;gap:8px">
+          <label class="hint" for="device-select">运行设备</label>
+          <select class="mini-select" id="device-select" title="auto = 有 GPU 用 GPU，否则 CPU">
+            <option value="auto">auto</option>
+            <option value="cpu">cpu</option>
+          </select>
+          <label class="hint" for="tier-select">OCR 档位</label>
+          <select class="mini-select" id="tier-select" title="PP-OCRv6 档位：medium 精度最高，tiny 最快">
+            <option value="medium">medium</option>
+            <option value="small">small</option>
+            <option value="tiny">tiny</option>
+          </select>
+          <label class="hint" for="batch-input">识别 batch</label>
+          <input class="mini-input" id="batch-input" type="number" min="1" max="256" step="1" title="文本识别 batch size；GPU 可调到 16~32">
+          <button class="btn small" id="btn-device-apply">应用并重载</button>
+          <span class="hint" id="device-hint"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-grid" style="margin-bottom:16px">
+      <div class="card">
+        <div class="card-head"><h2>运行环境</h2></div>
+        <div class="card-body"><dl class="kv" id="env-kv"></dl></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>模型清单</h2><span class="hint" id="models-hint"></span></div>
+        <div class="card-body">
+          <div class="table-scroll" style="max-height:300px">
+            <table class="admin-table" id="models-table">
+              <thead><tr><th>模型目录</th><th>大小</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="note" id="models-dir"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head">
+        <h2>任务管理</h2>
+        <div class="toolbar" style="margin:0">
+          <select id="task-status">
+            <option value="all">全部状态</option>
+            <option value="active">进行中</option>
+            <option value="pending">排队中</option>
+            <option value="running">识别中</option>
+            <option value="success">已完成</option>
+            <option value="failed">失败</option>
+            <option value="cancelled">已取消</option>
+          </select>
+          <input id="task-keyword" placeholder="文件名 / 任务ID" style="width:170px">
+          <button class="btn small" id="btn-task-search">查询</button>
+        </div>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div class="table-scroll">
+          <table class="admin-table" id="tasks-table">
+            <thead>
+              <tr>
+                <th>任务</th><th>文件名</th><th>会话</th><th>状态</th><th>进度</th>
+                <th>页数</th><th>耗时</th><th>创建时间</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="9" class="hint" style="padding:18px">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-grid">
+      <div class="card">
+        <div class="card-head">
+          <h2>服务日志</h2>
+          <div class="toolbar" style="margin:0">
+            <select id="log-file"></select>
+            <select id="log-lines">
+              <option value="200">200 行</option>
+              <option value="500" selected>500 行</option>
+              <option value="2000">2000 行</option>
+            </select>
+            <button class="btn small" id="btn-log-refresh">刷新</button>
+          </div>
+        </div>
+        <div class="card-body"><pre class="log-view" id="log-view">加载中…</pre></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>运行时配置</h2><span class="hint">仅白名单字段可在线修改</span></div>
+        <div class="card-body">
+          <textarea class="config-editor" id="config-editor" spellcheck="false"></textarea>
+          <div class="toolbar" style="margin:10px 0 0">
+            <button class="btn small primary" id="btn-config-save">保存并生效</button>
+            <button class="btn small" id="btn-config-reload">重新读取</button>
+            <span class="hint" id="config-path"></span>
+          </div>
+          <p class="note">
+            示例：<code>{"limits": {"max_upload_mb": 300}, "ocr": {"defaults": {"text_det_box_thresh": 0.5}}}</code><br>
+            concurrency / pipeline 等需修改 config/config.yaml 后重启进程。<br>
+            <code>ocr.device</code> / <code>ocr.ocr_tier</code> / <code>ocr.text_rec_batch_size</code>
+            改完需点上方「应用并重载」才会重建模型实例。
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/admin.js"></script>
+</body>
+</html>

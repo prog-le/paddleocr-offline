@@ -1,0 +1,26 @@
+# Docker 构建上下文排除项（减小上下文体积、避免把本机数据打进镜像）
+.git
+.gitignore
+.venv
+.venv-*
+venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+data
+logs
+dist
+models/paddlex_home/official_models/**/._*
+models/paddlex_home/locks
+.DS_Store
+offline/wheels/*/*.tar.gz
+# 容器内用基础镜像自带的 python，随包运行时只给「本地部署」用
+offline/python
+.runtime
+.runtime_env
+*.tar
+*.tar.gz
+.idea
+.vscode
+docs

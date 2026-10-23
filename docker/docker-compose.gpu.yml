@@ -1,0 +1,42 @@
+# =============================================================================
+# GPU 覆盖层（NVIDIA）——与 docker-compose.yml 叠加使用
+#
+# 用法（离线服务器，已 docker load GPU 镜像）：
+#   cd docker
+#   cp .env.example .env && vi .env          # 可选：MEM_LIMIT / GPU_MEM_LIMIT_MB / OCR_DEVICE
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# 前提：
+#   * 宿主机已装 NVIDIA 驱动 + nvidia-container-toolkit；
+#   * `docker run --rm --gpus all nvidia/cuda:12.9.1-base-ubuntu24.04 nvidia-smi` 能出卡；
+#   * 镜像是 GPU 版（docker/build_image.sh --device gpu 构建，或导入的 *.gpu.image.tar）。
+#
+# 说明：
+#   * `deploy.resources.reservations.devices` 在 docker compose v2 的非 swarm 模式下也生效，
+#     等价于 `--gpus all`；只想用某几张卡时把 count 改成数字并设置 device_ids。
+#   * 显存是独占资源：ocr.concurrency > 1 会让每个实例各占一份显存，
+#     12G 以下的卡建议保持 1。
+# =============================================================================
+name: paddlex-ocr
+
+services:
+  ocr-web:
+    build:
+      dockerfile: docker/Dockerfile.gpu
+    environment:
+      # auto / cpu / gpu / gpu:0；macOS 不涉及（GPU 镜像仅 linux/amd64）
+      PADDLEX_OCR_DEVICE: "${OCR_DEVICE:-auto}"
+      # 显存池比例（0~0.95，0=Paddle 默认）；给了 MB 就按卡总显存换算
+      PADDLEX_OCR_GPU_MEM_MB: "${GPU_MEM_LIMIT_MB:-0}"
+      PADDLEX_OCR_GPU_MEM_FRACTION: "${GPU_MEM_FRACTION:-0}"
+      # GPU 上可以放大识别 batch（16~32）；显存不足时优先调小
+      PADDLEX_OCR_TEXT_REC_BATCH: "${TEXT_REC_BATCH:-16}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}
+              capabilities: [gpu]
+    # GPU 模式下主要吃显存，宿主内存可以略降；PDF 渲染仍需要几 GB
+    mem_limit: ${MEM_LIMIT:-8g}

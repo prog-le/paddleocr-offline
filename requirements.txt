@@ -1,0 +1,53 @@
+# =============================================================================
+# 运行时依赖（本地部署与 Docker 构建共用）
+# -----------------------------------------------------------------------------
+# 版本策略：
+#   * paddlepaddle 3.4.0 在 Paddle 官方 CPU 源同时提供 linux_x86_64 与
+#     linux_aarch64 wheel，是双架构离线部署的关键，勿随意升级。
+#   * paddlex 3.7.2 与 paddlepaddle 3.4.0 为配套验证组合。
+#   * PyYAML 必须为 6.0.2（paddlex 硬性 pin），升级会导致依赖解析失败。
+# 更换版本时请同时修改：requirements.txt、docker/Dockerfile 的 ARG、README 兼容矩阵。
+#
+# NVIDIA GPU：本文件装的是 **CPU 版 paddlepaddle**。GPU 版（paddlepaddle-gpu）体积约 3.35 GB，
+#   与 CPU 版互斥，不能同时装，因此不写进这里：
+#     联网机器：./scripts/download_wheels.sh --arch amd64 --device gpu --cuda cu129
+#     目标机器：./scripts/install_offline.sh --device gpu
+#   安装脚本会剔除本文件里的 paddlepaddle 行，再单独装 GPU 版。
+#
+# ⚠ 本文件面向 **Linux 目标机**（离线部署 / Docker 构建），目标解释器为 **CPython 3.12**：
+#   本地部署用包内自带的 CPython 3.12.15 运行时（scripts/download_python_runtime.sh），
+#   Docker 用 python:3.12-slim-bookworm；因此 wheel 标签统一为 cp312。
+#   换 Python 版本时必须同时更换运行时并重新下载 wheel（cp 标签必须一致）。
+#
+#   paddlepaddle==3.4.0 只有 Linux 轮子（Paddle 官方 CPU 源），在 macOS / Windows 上
+#   安装会报 "Could not find a version that satisfies the requirement paddlepaddle==3.4.0"。
+#   本机联调请改用：pip install -r requirements-macos.txt   （paddle 3.3.1）
+# =============================================================================
+
+# ---- PaddleX 产线（OCR / 表格识别 / 版面分析）与 CPU 推理引擎 ----
+paddlex[ocr]==3.7.2
+paddlepaddle==3.4.0
+
+# ---- Web 服务 ----
+fastapi>=0.115,<0.160
+uvicorn>=0.30,<0.55
+python-multipart>=0.0.9,<0.0.33
+
+# ---- 配置 / 文件处理 ----
+PyYAML==6.0.2
+Pillow>=10.3,<12
+pypdfium2>=4,<6
+
+# ---- PDF 渲染（三级降级：PyMuPDF -> pypdfium2 -> pdf2image/poppler） ----
+# PyMuPDF 与 pypdfium2 都是纯 wheel（含 aarch64），装好其中一个即可离线渲染 PDF。
+PyMuPDF>=1.24,<1.27
+# 可选：pdf2image 需要系统装 poppler（apt/离线 rpm），仅在 PyMuPDF 与 pypdfium2 都不可用时
+# 才会被用到，所以默认不装、也不进离线 wheel 包。确认要这条路再取消注释：
+# pdf2image>=1.17,<2
+
+# ---- 导出 ----
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
+
+# ---- 运行状态监控（管理后台展示内存/CPU） ----
+psutil>=5.9,<8

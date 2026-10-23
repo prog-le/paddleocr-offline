@@ -1,0 +1,35 @@
+# =============================================================================
+# macOS 本地联调依赖（不是部署目标，部署请用 requirements.txt）
+# -----------------------------------------------------------------------------
+# 为什么单独一份：
+#   requirements.txt 面向 Linux 离线部署，锁定 paddlepaddle==3.4.0。
+#   该版本**只提供 Linux 轮子**（Paddle 官方 CPU 源），PyPI 上没有 macOS/Windows 版本，
+#   因此在 Mac 上直接 pip install -r requirements.txt 会报：
+#       ERROR: Could not find a version that satisfies the requirement paddlepaddle==3.4.0
+#
+#   macOS(Apple Silicon / Intel) 可用的最高版本是 3.3.1，与 paddlex 3.7.2 兼容，
+#   用本文件即可在本机跑通「上传→识别→预览→导出」，用于功能验证与界面调试。
+#
+# 用法：
+#   python3 -m venv .venv && . .venv/bin/activate
+#   pip install -r requirements-macos.txt
+#   # 国内网络建议加镜像：
+#   pip install -r requirements-macos.txt -i https://mirrors.ustc.edu.cn/pypi/simple
+# =============================================================================
+
+paddlex[ocr]==3.7.2
+paddlepaddle==3.3.1          # macOS 可用版本（Linux 部署请用 3.4.0）
+
+fastapi>=0.115,<0.160
+uvicorn>=0.30,<0.55
+python-multipart>=0.0.9,<0.0.33
+
+PyYAML==6.0.2
+Pillow>=10.3,<12
+pypdfium2>=4,<6
+PyMuPDF>=1.24,<1.27
+
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
+
+psutil>=5.9,<8

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PaddleX OCR · 离线文字与表格识别</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="2" y="6" width="28" height="20" rx="3" fill="#1d4ed8"/>
+        <path d="M8 12h6M8 16h10M8 20h8" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+        <rect x="19" y="11" width="6" height="10" rx="1" fill="#93c5fd"/>
+      </svg>
+      <div class="brand-text">
+        <strong>PaddleX OCR</strong>
+        <span>离线文字识别 · 表格结构还原</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="pill" id="pipeline-pill">加载中…</span>
+      <a class="link" href="/admin" target="_blank" rel="noopener">后台管理</a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- 左栏：上传 + 参数 -->
+    <div class="col-left">
+      <section class="card">
+        <div class="card-head">
+          <h2>上传文件</h2>
+          <span class="hint" id="upload-hint">支持 PDF / JPG / PNG / BMP / TIFF / WEBP，可多选</span>
+        </div>
+        <div class="pipeline-row">
+          <label for="pipeline-select">识别产线</label>
+          <select id="pipeline-select" title="不同产线的能力与速度不同，可对每批文件单独选择"></select>
+          <p class="hint" id="pipeline-desc">加载中…</p>
+        </div>
+        <div id="dropzone" class="dropzone" tabindex="0">
+          <svg viewBox="0 0 48 48" aria-hidden="true" class="dz-icon">
+            <path d="M24 32V14m0 0l-7 7m7-7l7 7" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 34v2a4 4 0 004 4h20a4 4 0 004-4v-2" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+          </svg>
+          <p class="dz-title">点击选择文件，或把文件拖到这里</p>
+          <p class="dz-sub" id="dz-sub">单文件最大 200 MB</p>
+          <input type="file" id="file-input" multiple hidden
+                 accept=".pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp">
+        </div>
+        <ul id="file-list" class="file-list"></ul>
+        <div class="actions">
+          <button id="btn-submit" class="btn primary" disabled>开始识别</button>
+          <button id="btn-clear" class="btn ghost" disabled>清空</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head collapsible" id="params-toggle">
+          <h2>识别参数</h2>
+          <span class="chev">收起</span>
+        </div>
+        <div id="params-body" class="card-body">
+          <div class="switch-grid">
+            <label class="switch">
+              <input type="checkbox" data-param="use_table_recognition">
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">表格识别</span>
+            </label>
+            <label class="switch">
+              <input type="checkbox" data-param="use_doc_orientation_classify">
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">文档方向矫正</span>
+            </label>
+            <label class="switch">
+              <input type="checkbox" data-param="use_doc_unwarping">
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">弯曲矫正</span>
+            </label>
+            <label class="switch">
+              <input type="checkbox" data-param="use_textline_orientation">
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">文本行方向</span>
+            </label>
+            <label class="switch">
+              <input type="checkbox" data-param="use_formula_recognition">
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">公式识别</span>
+            </label>
+            <label class="switch">
+              <input type="checkbox" data-param="use_seal_recognition">
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">印章识别</span>
+            </label>
+          </div>
+
+          <div class="sliders">
+            <div class="slider" data-param="text_det_box_thresh">
+              <div class="slider-head"><span>文本检测框阈值</span><b class="val"></b></div>
+              <input type="range" min="0.1" max="0.95" step="0.05">
+              <p class="tip">调低可检出更淡的文字，但可能引入噪点</p>
+            </div>
+            <div class="slider" data-param="text_det_thresh">
+              <div class="slider-head"><span>文本检测像素阈值</span><b class="val"></b></div>
+              <input type="range" min="0.05" max="0.9" step="0.05">
+              <p class="tip">越低越敏感，适合低对比度扫描件</p>
+            </div>
+            <div class="slider" data-param="text_rec_score_thresh">
+              <div class="slider-head"><span>识别置信度过滤</span><b class="val"></b></div>
+              <input type="range" min="0" max="0.9" step="0.05">
+              <p class="tip">提高可过滤低质量识别结果，0 表示不过滤</p>
+            </div>
+            <div class="slider" data-param="layout_threshold">
+              <div class="slider-head"><span>版面检测阈值</span><b class="val"></b></div>
+              <input type="range" min="0.1" max="0.9" step="0.05">
+              <p class="tip">影响版面块（标题/段落/表格）检出灵敏度</p>
+            </div>
+          </div>
+
+          <div class="row-inline">
+            <label class="mini-field">
+              <span>文本检测边长</span>
+              <input type="number" data-param="text_det_limit_side_len" min="320" max="2048" step="32">
+            </label>
+            <button class="btn ghost small" id="btn-reset-params">恢复默认</button>
+          </div>
+          <p class="note">参数仅对之后提交的任务生效；显存/内存紧张时建议关闭公式、印章识别。</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- 右栏：任务队列 + 结果 -->
+    <div class="col-right">
+      <section class="card">
+        <div class="card-head">
+          <h2>任务队列</h2>
+          <div class="queue-meta">
+            <span class="pill" id="device-pill" title="运行设备">设备 —</span>
+            <span class="pill" id="session-pill" title="任务按浏览器会话隔离：只能看到本浏览器上传的任务">会话 —</span>
+            <span id="queue-summary" class="hint">—</span>
+            <button class="btn ghost small" id="btn-refresh">刷新</button>
+          </div>
+        </div>
+        <div id="task-list" class="task-list">
+          <p class="empty">本会话还没有任务，先上传文件吧</p>
+        </div>
+      </section>
+
+      <section class="card result-card" id="result-card">
+        <div class="card-head result-head">
+          <h2 id="result-title">识别结果</h2>
+          <div class="result-actions">
+            <button class="btn ghost small" id="btn-copy" disabled>复制全文</button>
+            <div class="export-group">
+              <button class="btn small" data-export="docx" disabled>Word</button>
+              <button class="btn small" data-export="xlsx" disabled>Excel</button>
+              <button class="btn small" data-export="txt" disabled>TXT</button>
+              <button class="btn small" data-export="md" disabled>Markdown</button>
+            </div>
+          </div>
+        </div>
+        <div id="result-meta" class="result-meta"></div>
+        <div id="result-body" class="result-body">
+          <p class="empty">选择左侧任务查看识别结果</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>PaddleX PP-StructureV3 · CPU 推理 · 全离线运行</span>
+    <span id="footer-version"></span>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

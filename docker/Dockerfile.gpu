@@ -1,0 +1,135 @@
+# =============================================================================
+# PaddleX OCR Web 镜像 · NVIDIA GPU 版（仅 linux/amd64）
+#
+# 与 docker/Dockerfile（CPU 版）的差别只有一处：
+#   * 安装 paddlepaddle-gpu 而不是 paddlepaddle（否则两者会冲突）。
+# 其余（模型内置、--no-index 离线安装、非 root 运行、健康检查）完全一致。
+#
+# 注意：**构建阶段不能 import paddle**。GPU 版 paddle 导入时会 dlopen libcuda.so.1，
+# 而 docker build 的容器没有宿主驱动，必定报 "libcuda.so.1: cannot open shared object file"。
+# 因此这里只用 importlib.metadata 校验安装结果；真正的 CUDA 可用性在运行容器
+# （带 --gpus all）时验证，见 /api/health 与 smoke_test.py。
+#
+# 前提条件（构建机与运行机都要满足）：
+#   1. 构建机：docker + buildx；offline/wheels/amd64 里有 paddlepaddle_gpu-*.whl
+#      （约 3.3 GB，自带 CUDA 12.9 / cuDNN 运行库）；
+#   2. 运行机：NVIDIA 驱动（CUDA 12.9 需要 >= 575.57.08，或使用 570+ 的
+#      forward-compat 包）+ nvidia-container-toolkit；
+#   3. docker run 必须带 `--gpus all`（compose 用 device reservations），
+#      否则容器里 `paddle.device.is_compiled_with_cuda()` 为真但 device_count()==0。
+#
+# 为什么基础镜像不用 nvidia/cuda：
+#   paddlepaddle-gpu 的 Linux 轮子带的是 Paddle 二进制 + CUDA 头文件，
+#   **运行库（cudnn/cublas/cudart/nvrtc...）由 nvidia-* pip 包提供**。
+#   这些包已随 offline/wheels/amd64 一起下载，pip 会从本地目录装好；
+#   容器只需要宿主注入的 libcuda.so（NVIDIA Container Toolkit 负责），
+#   所以 slim 基础镜像足够，避免再叠一层 3GB 的 CUDA 基础镜像。
+#   （若 offline/wheels 缺 nvidia-*，构建会报
+#     "Could not find a version that satisfies nvidia-cuda-nvrtc-cu12..."，
+#     用 scripts/verify_gpu_wheel.sh 可提前发现。）
+#
+# 构建：
+#   ./docker/build_image.sh --arch amd64 --device gpu
+# =============================================================================
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim-bookworm
+
+ARG TARGETARCH=amd64
+ARG APP_VERSION=1.0.0
+# wheel 目录（相对构建上下文）。GPU 轮子通常放在 offline/wheels-gpu/amd64，
+# 与 CPU 轮子分开，避免同一个目录混装两种 Paddle。
+ARG WHEELS_DIR=offline/wheels/amd64
+ARG DEBIAN_FRONTEND=noninteractive
+
+LABEL org.opencontainers.image.title="PaddleX OCR Web (GPU)" \
+      org.opencontainers.image.description="Offline OCR + table recognition (PaddleX, NVIDIA CUDA)" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.arch="${TARGETARCH}"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=Asia/Shanghai \
+    LANG=C.UTF-8 \
+    PADDLE_PDX_CACHE_HOME=/app/models/paddlex_home \
+    PADDLE_PDX_MODEL_SOURCE=BOS \
+    PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
+    PADDLE_PDX_DISABLE_TELEMETRY=True \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    MODELSCOPE_OFFLINE=1 \
+    PADDLEX_OCR_DATA_DIR=/app/data \
+    PADDLEX_OCR_LOG_DIR=/app/logs \
+    PADDLEX_OCR_CONFIG=/app/config/config.yaml \
+    # 默认 auto：有 GPU 就用；没有则回落 CPU（不会启动失败）
+    PADDLEX_OCR_DEVICE=auto \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    # 显存池默认按需增长；要限流用 PADDLEX_OCR_GPU_MEM_MB 或 config.yaml
+    FLAGS_allocator_strategy=auto_growth
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        tzdata \
+        ca-certificates \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ---- Python 依赖：先装其余依赖（剔除 CPU 版 paddle），再装 GPU 版 ----
+COPY requirements.txt /app/requirements.txt
+COPY ${WHEELS_DIR}/ /tmp/wheels/
+# 构建前先检查 CUDA 运行库依赖是否齐全：缺了在 pip 阶段只会报
+# "No matching distribution found"，很难看出是"打包时漏下 nvidia-*"。
+COPY scripts/gpu_deps.py /tmp/gpu_deps.py
+RUN python /tmp/gpu_deps.py --dir /tmp/wheels > /tmp/missing-deps.txt 2>/dev/null; \
+    if [ -s /tmp/missing-deps.txt ]; then \
+        echo "缺少以下 CUDA 运行库依赖，请在构建机重新执行："; \
+        echo "  ./scripts/download_wheels.sh --arch amd64 --device gpu --cuda cu129 --out offline/wheels-gpu"; \
+        cat /tmp/missing-deps.txt; \
+        exit 1; \
+    fi
+RUN grep -v -E '^[[:space:]]*paddlepaddle([<>=!~ ]|$)' /app/requirements.txt > /tmp/req-no-paddle.txt \
+    && python -m pip install --no-index --find-links=/tmp/wheels -r /tmp/req-no-paddle.txt \
+    && python -m pip install --no-index --find-links=/tmp/wheels paddlepaddle-gpu \
+    && python -c "import importlib.metadata as m; print('paddlepaddle-gpu', m.version('paddlepaddle-gpu'), '/ paddlex', m.version('paddlex'))" \
+    && rm -rf /tmp/wheels /tmp/req-no-paddle.txt
+
+# ---- 应用代码与前端静态资源 ----
+COPY backend/ /app/backend/
+COPY frontend/ /app/frontend/
+COPY config/ /app/config/
+COPY scripts/ /app/scripts/
+
+# ---- 模型（离线内置，启动即用）----
+COPY models/ /app/models/
+
+# ---- 运行用户与目录权限 ----
+RUN useradd -m -u 10001 -s /bin/bash ocr \
+    && mkdir -p /app/data /app/logs \
+    && chown -R ocr:ocr /app/data /app/logs /app/models \
+    && chmod +x /app/scripts/*.sh 2>/dev/null || true
+
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER ocr
+WORKDIR /app
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=5 \
+    CMD python /app/scripts/docker_health.py
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["python", "-m", "uvicorn", "backend.main:app", \
+     "--host", "0.0.0.0", "--port", "8000", "--workers", "1", \
+     "--no-access-log", "--timeout-keep-alive", "75"]

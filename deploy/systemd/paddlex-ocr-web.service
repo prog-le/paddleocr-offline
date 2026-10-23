@@ -1,0 +1,45 @@
+# PaddleX OCR Web —— systemd 单元示例
+#
+# 安装：
+#   sudo cp deploy/systemd/paddlex-ocr-web.service /etc/systemd/system/
+#   sudo vi /etc/systemd/system/paddlex-ocr-web.service     # 改 User / WorkingDirectory / 端口
+#   sudo systemctl daemon-reload && sudo systemctl enable --now paddlex-ocr-web
+#
+# 查看：systemctl status paddlex-ocr-web ; journalctl -u paddlex-ocr-web -f
+
+[Unit]
+Description=PaddleX OCR Web (offline OCR + table recognition)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 建议使用专用低权限账号：sudo useradd -r -s /sbin/nologin -d /opt/paddlex-ocr-web ocr
+User=ocr
+Group=ocr
+WorkingDirectory=/opt/paddlex-ocr-web
+
+# 离线运行关键环境变量（缺一不可）
+Environment=PADDLE_PDX_CACHE_HOME=/opt/paddlex-ocr-web/models/paddlex_home
+Environment=PADDLE_PDX_MODEL_SOURCE=BOS
+Environment=PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+Environment=PADDLE_PDX_DISABLE_TELEMETRY=True
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=MODELSCOPE_OFFLINE=1
+Environment=PYTHONUNBUFFERED=1
+# 管理员口令（也可改 config/config.yaml）
+#Environment=PADDLEX_OCR_ADMIN_PASSWORD=ChangeMe_2026
+
+# 必须 --workers 1：任务队列与产线实例都在进程内
+ExecStart=/opt/paddlex-ocr-web/.venv/bin/python -m uvicorn backend.main:app \
+          --host 0.0.0.0 --port 8000 --workers 1 --no-access-log --timeout-keep-alive 75
+
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+# 内存保护：超出则被 OOM killer 终止并由 systemd 重启（按机器内存调整）
+#MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

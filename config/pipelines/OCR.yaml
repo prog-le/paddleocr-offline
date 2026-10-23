@@ -1,0 +1,45 @@
+# label: 纯文字识别（PP-OCRv6）
+# description: PP-OCRv6 检测+识别（默认 medium 档），无表格结构、速度最快；档位由 ocr.ocr_tier 控制
+# kind: ocr
+# =============================================================================
+# PP-OCRv6 纯文字识别产线
+# -----------------------------------------------------------------------------
+# 来源：paddleocr 3.7 / paddlex 3.7.2 的官方 OCR 产线（paddlex --get_pipeline_config OCR），
+#      官方默认模型即 PP-OCRv6_medium_det / PP-OCRv6_medium_rec。
+#
+# 与官方默认的差异（都是为了本项目的默认行为）：
+#   use_doc_preprocessor: False       不加载方向分类/矫正模型（本工具默认不做纠偏，省 ~100MB）
+#   use_textline_orientation: False   不做文本行方向分类（表格/票据以外几乎不需要）
+#
+# 档位与批处理**不要在这里改死**：引擎会按 config.yaml 的
+#   ocr.ocr_tier: medium|small|tiny
+#   ocr.text_rec_batch_size / ocr.textline_batch_size
+# 覆盖下面 TextDetection/TextRecognition 的 model_name 与 batch_size（改完需「重载产线」）。
+#
+# 想退回 PP-OCRv5：把两个 model_name 改成 PP-OCRv5_server_det / PP-OCRv5_server_rec，
+# 并执行 python3 scripts/download_models.py --config config/pipelines/OCR.yaml 补模型。
+# =============================================================================
+pipeline_name: OCR
+
+text_type: general
+
+use_doc_preprocessor: False
+use_textline_orientation: False
+
+SubModules:
+  TextDetection:
+    module_name: text_detection
+    model_name: PP-OCRv6_medium_det
+    model_dir: null
+    limit_side_len: 960
+    limit_type: min
+    max_side_limit: 4000
+    thresh: 0.3
+    box_thresh: 0.6
+    unclip_ratio: 2.0
+  TextRecognition:
+    module_name: text_recognition
+    model_name: PP-OCRv6_medium_rec
+    model_dir: null
+    batch_size: 6
+    score_thresh: 0.0

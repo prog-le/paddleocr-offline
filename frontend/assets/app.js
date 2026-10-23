@@ -1,0 +1,769 @@
+/* ==========================================================================
+   PaddleX OCR Web 前端逻辑（原生 JS，无框架、无 CDN）
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  const state = {
+    meta: null,
+    files: [],
+    tasks: [],
+    selectedId: null,
+    result: null,
+    defaults: {},
+    loadedTaskId: null,
+    pollTimer: null,
+    submitting: false,
+    queue: {},
+    autoSelected: false,
+    pipelines: [],
+    pipeline: '',
+  };
+
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+  const STATUS_TEXT = {
+    pending: '排队中',
+    running: '识别中',
+    success: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+  };
+
+  // ---------------------------------------------------------------- 工具
+  function fmtSize(bytes) {
+    if (!bytes && bytes !== 0) return '-';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0, v = bytes;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  function fmtDuration(sec) {
+    if (sec === null || sec === undefined) return '-';
+    if (sec < 60) return sec.toFixed(1) + 's';
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec % 60);
+    return m + 'm' + String(s).padStart(2, '0') + 's';
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return '-';
+    const d = new Date(ts * 1000);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  let toastTimer = null;
+  function toast(msg, kind) {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.className = 'toast show' + (kind ? ' ' + kind : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = 'toast'; }, 3200);
+  }
+
+  async function api(path, options) {
+    const res = await fetch(path, options);
+    const ct = res.headers.get('content-type') || '';
+    let body = null;
+    if (ct.includes('application/json')) {
+      body = await res.json().catch(() => null);
+    } else {
+      body = await res.text();
+    }
+    if (!res.ok) {
+      const detail = body && body.detail ? body.detail : (typeof body === 'string' ? body : `HTTP ${res.status}`);
+      throw new Error(detail);
+    }
+    return body;
+  }
+
+  // ---------------------------------------------------------------- 初始化
+  async function init() {
+    bindEvents();
+    try {
+      state.meta = await api('/api/meta');
+      applyMeta();
+    } catch (err) {
+      toast('无法获取服务配置：' + err.message, 'err');
+    }
+    refreshTasks(true);
+  }
+
+  function applyMeta() {
+    const meta = state.meta || {};
+    const pipeline = meta.pipeline || 'OCR';
+    const dev = meta.device || {};
+    const active = dev.active || {};
+    const deviceLabel = active.kind === 'gpu'
+      ? `GPU${active.index || 0} · ${active.name || 'CUDA'}`
+      : (active.name || 'CPU');
+    const pill = $('#pipeline-pill');
+    pill.textContent = (meta.mock ? 'MOCK 自检模式' : pipeline) + ' · ' + deviceLabel;
+    pill.className = 'pill ' + (meta.mock ? 'warn' : (active.kind === 'gpu' ? 'ok' : ''));
+    pill.title = active.kind === 'gpu'
+      ? `CUDA 加速：${active.name}（配置 ${dev.configured || 'auto'}）`
+      : `CPU 推理（配置 ${dev.configured || 'auto'}）`;
+
+    // 设备 pill：明确显示当前跑在 CPU 还是 GPU；Apple Silicon 额外说明"只能用 CPU"
+    const devicePill = $('#device-pill');
+    if (devicePill) {
+      const isApple = dev.platform && dev.platform.apple_silicon;
+      if (active.kind === 'gpu') {
+        const mem = dev.memory || {};
+        const memText = mem.total_mem_mb ? ` ${mem.total_mem_mb}MB` : '';
+        devicePill.textContent = `GPU${active.index || 0}${memText}`;
+        devicePill.className = 'pill ok';
+        devicePill.title = `CUDA 加速：${active.name}\n整卡显存 ${mem.used_mem_mb || '?'}/${mem.total_mem_mb || '?'} MB\n识别 batch=${(dev.batching || {}).text_rec_batch_size || '-'}`;
+      } else if (isApple) {
+        devicePill.textContent = 'Apple Silicon · CPU';
+        devicePill.className = 'pill';
+        devicePill.title = 'PaddlePaddle 没有 Metal/MPS 后端，Apple Silicon 只能用 CPU 推理。'
+          + '\n可调大 ocr.cpu_threads、降低 pdf_dpi/max_side_px 提速；需要 GPU 请部署到 NVIDIA 主机。';
+      } else {
+        devicePill.textContent = 'CPU';
+        devicePill.className = 'pill';
+        devicePill.title = active.reason || '当前使用 CPU 推理';
+      }
+      if (active.fallback && active.reason && !isApple) {
+        devicePill.title = active.reason;
+      }
+    }
+
+    const limits = meta.limits || {};
+    $('#dz-sub').textContent =
+      `单文件最大 ${limits.max_upload_mb || 200} MB · 单次最多 ${limits.max_files_per_batch || 20} 个 · 单个 PDF 最多 ${limits.max_pdf_pages || 100} 页`;
+    $('#footer-version').textContent = 'v' + (meta.version || '1.0.0') +
+      (meta.pdf_backend ? ' · PDF 引擎 ' + meta.pdf_backend : '');
+    // 会话标识：任务按会话隔离，仅本浏览器可见
+    const sid = (meta.session && meta.session.id) || '';
+    const sessionPill = $('#session-pill');
+    if (sessionPill && sid) {
+      sessionPill.textContent = '会话 ' + sid;
+      sessionPill.title = '任务按浏览器会话隔离（' + sid + '）：只能看到本浏览器上传的任务；'
+        + '换浏览器、清 Cookie 或换设备后看不到这些任务，管理员后台仍可查看。';
+    }
+
+    state.defaults = Object.assign({}, (meta.ocr && meta.ocr.defaults) || {});
+    applyParams(state.defaults);
+    initPipelines(meta);
+  }
+
+  // 参数面板里所有可调项（用于按产线统一开关）
+  const ALL_PARAM_KEYS = [
+    'use_table_recognition', 'use_formula_recognition', 'use_seal_recognition',
+    'use_doc_orientation_classify', 'use_doc_unwarping', 'use_textline_orientation',
+    'text_det_box_thresh', 'text_det_thresh', 'text_rec_score_thresh', 'layout_threshold',
+  ];
+
+  function initPipelines(meta) {
+    const list = (meta.pipelines || []).map((p) => ({
+      id: p.id,
+      label: p.label || p.id,
+      kind: p.kind || 'structure',
+      description: p.description || '',
+    }));
+    if (!list.length) {
+      list.push({ id: meta.pipeline || 'OCR', label: meta.pipeline || 'OCR', kind: 'structure', description: '' });
+    }
+    state.pipelines = list;
+    state.pipeline = meta.pipeline || list[0].id;
+    const select = $('#pipeline-select');
+    select.innerHTML = '';
+    list.forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.label + (p.id === meta.pipeline ? '（默认）' : '');
+      opt.title = p.description || p.label;
+      select.appendChild(opt);
+    });
+    if (list.some((p) => p.id === state.pipeline)) select.value = state.pipeline;
+    select.addEventListener('change', () => {
+      state.pipeline = select.value;
+      applyPipelineUI();
+    });
+    applyPipelineUI();
+  }
+
+  function currentPipeline() {
+    return state.pipelines.find((p) => p.id === state.pipeline) || state.pipelines[0] || { kind: 'structure' };
+  }
+
+  // 各产线不支持哪些参数（键 -> 原因），据此禁用控件并给出悬浮说明
+  const PARAM_UNSUPPORTED = {
+    ocr: {
+      use_table_recognition: '纯文字识别产线不做表格结构，请改用「通用表格识别」或「通用版面解析」',
+      use_formula_recognition: '纯文字识别产线不含公式识别子模型',
+      use_seal_recognition: '纯文字识别产线不含印章识别子模型',
+      layout_threshold: '纯文字识别产线不做版面分析，无此阈值',
+    },
+    table: {
+      use_table_recognition: '本产线本身即表格识别，该开关始终生效',
+      use_formula_recognition: '通用表格识别产线不含公式识别子模型',
+      use_seal_recognition: '通用表格识别产线不含印章识别子模型',
+      layout_threshold: '通用表格识别产线的版面检测只用于定位表格，无该阈值',
+      use_textline_orientation: '通用表格识别产线不支持文本行方向分类',
+    },
+    structure: {},
+  };
+
+  function applyPipelineUI() {
+    const p = currentPipeline();
+    const desc = $('#pipeline-desc');
+    if (desc) desc.textContent = p.description || p.label;
+
+    const unsupported = PARAM_UNSUPPORTED[p.kind] || {};
+    ALL_PARAM_KEYS.forEach((key) => {
+      const el = $(`input[data-param="${key}"]`);
+      if (!el) return;
+      const reason = unsupported[key] || '';
+      el.disabled = Boolean(reason);
+      const wrap = el.closest('.switch') || el.closest('.slider');
+      if (wrap) {
+        wrap.style.opacity = reason ? '.45' : '1';
+        wrap.title = reason;
+      }
+    });
+  }
+
+  function applyParams(params) {
+    $$('input[data-param]').forEach((el) => {
+      const key = el.dataset.param;
+      if (!(key in params)) return;
+      const value = params[key];
+      if (el.type === 'checkbox') {
+        el.checked = !!value;
+      } else {
+        el.value = value;
+        updateSliderLabel(el);
+      }
+    });
+  }
+
+  function updateSliderLabel(input) {
+    const wrap = input.closest('.slider');
+    if (wrap) {
+      const val = wrap.querySelector('.val');
+      if (val) val.textContent = Number(input.value).toFixed(2);
+    }
+  }
+
+  function collectParams() {
+    const out = {};
+    $$('input[data-param]').forEach((el) => {
+      const key = el.dataset.param;
+      if (el.type === 'checkbox') {
+        out[key] = el.checked;
+      } else if (el.type === 'number') {
+        const n = Number(el.value);
+        if (!Number.isNaN(n)) out[key] = n;
+      } else {
+        out[key] = Number(el.value);
+      }
+    });
+    return out;
+  }
+
+  // ---------------------------------------------------------------- 事件
+  function bindEvents() {
+    const dropzone = $('#dropzone');
+    const input = $('#file-input');
+
+    dropzone.addEventListener('click', () => input.click());
+    dropzone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); }
+    });
+    ['dragenter', 'dragover'].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+      })
+    );
+    ['dragleave', 'drop'].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        if (evt === 'dragleave' && e.relatedTarget && dropzone.contains(e.relatedTarget)) return;
+        dropzone.classList.remove('dragover');
+      })
+    );
+    dropzone.addEventListener('drop', (e) => {
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) addFiles(files);
+    });
+    input.addEventListener('change', () => {
+      if (input.files && input.files.length) addFiles(input.files);
+      input.value = '';
+    });
+
+    $('#btn-submit').addEventListener('click', submitTasks);
+    $('#btn-clear').addEventListener('click', () => {
+      state.files = [];
+      renderFileList();
+    });
+    $('#btn-refresh').addEventListener('click', () => refreshTasks(true));
+
+    $('#params-toggle').addEventListener('click', () => {
+      const body = $('#params-body');
+      const hidden = body.hasAttribute('hidden');
+      if (hidden) body.removeAttribute('hidden'); else body.setAttribute('hidden', '');
+      $('#params-toggle .chev').textContent = hidden ? '收起' : '展开';
+    });
+
+    $$('.slider input[type="range"]').forEach((el) => {
+      el.addEventListener('input', () => updateSliderLabel(el));
+    });
+    $('#btn-reset-params').addEventListener('click', () => {
+      applyParams(state.defaults);
+      toast('已恢复默认参数', 'ok');
+    });
+
+    $('#btn-copy').addEventListener('click', copyText);
+    $$('[data-export]').forEach((btn) => {
+      btn.addEventListener('click', () => exportResult(btn.dataset.export));
+    });
+  }
+
+  // ---------------------------------------------------------------- 文件
+  function addFiles(fileList) {
+    const meta = state.meta || {};
+    const limits = meta.limits || {};
+    const allowed = (meta.supported_ext || ['.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp']);
+    const maxBytes = (limits.max_upload_mb || 200) * 1024 * 1024;
+    const maxFiles = limits.max_files_per_batch || 20;
+    const existing = new Set(state.files.map((f) => f.name + ':' + f.size));
+
+    Array.from(fileList).forEach((file) => {
+      const key = file.name + ':' + file.size;
+      if (existing.has(key)) return;
+      const ext = ('.' + (file.name.split('.').pop() || '')).toLowerCase();
+      let error = '';
+      if (!allowed.includes(ext)) error = '不支持的格式';
+      else if (file.size > maxBytes) error = '超过 ' + (limits.max_upload_mb || 200) + ' MB';
+      else if (file.size === 0) error = '空文件';
+      const item = { file: file, name: file.name, size: file.size, error: error };
+      if (!error && state.files.filter((f) => !f.error).length >= maxFiles) {
+        item.error = '超过单次 ' + maxFiles + ' 个上限';
+      }
+      state.files.push(item);
+      existing.add(key);
+    });
+    renderFileList();
+  }
+
+  function renderFileList() {
+    const ul = $('#file-list');
+    ul.innerHTML = '';
+    state.files.forEach((item, index) => {
+      const li = document.createElement('li');
+      li.className = 'file-item' + (item.error ? ' bad' : '');
+      const name = document.createElement('span');
+      name.className = 'fname';
+      name.textContent = item.name;
+      name.title = item.name + (item.error ? '（' + item.error + '）' : '');
+      const size = document.createElement('span');
+      size.className = 'fsize';
+      size.textContent = item.error ? item.error : fmtSize(item.size);
+      const del = document.createElement('button');
+      del.className = 'fdel';
+      del.type = 'button';
+      del.textContent = '×';
+      del.title = '移除';
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.files.splice(index, 1);
+        renderFileList();
+      });
+      li.append(name, size, del);
+      ul.appendChild(li);
+    });
+    const valid = state.files.filter((f) => !f.error).length;
+    $('#btn-submit').disabled = valid === 0 || state.submitting;
+    $('#btn-clear').disabled = state.files.length === 0 || state.submitting;
+    $('#btn-submit').textContent = state.submitting
+      ? '上传中…'
+      : valid > 0 ? `开始识别（${valid}）` : '开始识别';
+  }
+
+  // ---------------------------------------------------------------- 提交
+  async function submitTasks() {
+    const valid = state.files.filter((f) => !f.error);
+    if (!valid.length || state.submitting) return;
+    state.submitting = true;
+    renderFileList();
+    const form = new FormData();
+    valid.forEach((item) => form.append('files', item.file, item.name));
+    form.append('params', JSON.stringify(collectParams()));
+    form.append('pipeline', state.pipeline || '');
+    try {
+      const res = await api('/api/tasks', { method: 'POST', body: form });
+      const tasks = (res.tasks || []).map((t) => ({ id: t.id }));
+      toast(`已提交 ${tasks.length} 个任务，正在排队识别`, 'ok');
+      if (res.errors && res.errors.length) {
+        toast(`${res.errors.length} 个文件被拒绝：` + res.errors[0].error, 'err');
+      }
+      state.files = state.files.filter((f) => f.error);
+      renderFileList();
+      if (tasks.length) {
+        state.selectedId = tasks[0].id;
+        state.loadedTaskId = null;
+      }
+      await refreshTasks(true);
+    } catch (err) {
+      toast('提交失败：' + err.message, 'err');
+    } finally {
+      state.submitting = false;
+      renderFileList();
+    }
+  }
+
+  // ---------------------------------------------------------------- 队列
+  async function refreshTasks(immediate) {
+    clearTimeout(state.pollTimer);
+    try {
+      const data = await api('/api/tasks?limit=60');
+      state.tasks = data.items || [];
+      state.queue = data.queue || {};
+      renderTasks(state.queue);
+      // 首次进入自动展开最近一个已完成任务，省去一次点击
+      if (!state.autoSelected && !state.selectedId && state.tasks.length) {
+        const first = state.tasks.find((t) => t.status === 'success');
+        if (first) {
+          state.autoSelected = true;
+          selectTask(first.id);
+        }
+      }
+      const active = state.tasks.some((t) => t.status === 'pending' || t.status === 'running');
+      maybeLoadResult();
+      state.pollTimer = setTimeout(refreshTasks, active ? 1200 : 6000);
+    } catch (err) {
+      state.pollTimer = setTimeout(refreshTasks, 5000);
+      if (immediate) toast('获取任务列表失败：' + err.message, 'err');
+    }
+  }
+
+  function renderTasks(queue) {
+    const list = $('#task-list');
+    const summary = $('#queue-summary');
+    summary.textContent = `排队 ${queue.pending || 0} · 运行 ${queue.running || 0} · 完成 ${queue.success || 0}` +
+      (queue.paused ? ' · 已暂停接单' : '');
+
+    if (!state.tasks.length) {
+      list.innerHTML = '<p class="empty">本会话还没有任务，先上传文件吧</p>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    state.tasks.forEach((task) => {
+      const item = document.createElement('div');
+      item.className = 'task-item ' + task.status + (task.id === state.selectedId ? ' active' : '');
+      item.dataset.id = task.id;
+      item.addEventListener('click', () => selectTask(task.id));
+
+      const dot = document.createElement('span');
+      dot.className = 'dot ' + task.status;
+
+      const main = document.createElement('div');
+      main.className = 'task-main';
+      const name = document.createElement('div');
+      name.className = 'task-name';
+      name.textContent = task.filename;
+      name.title = task.filename;
+      const sub = document.createElement('div');
+      sub.className = 'task-sub';
+      const parts = [];
+      parts.push(STATUS_TEXT[task.status] || task.status);
+      if (task.pipeline_label) parts.push(task.pipeline_label);
+      parts.push(fmtSize(task.size));
+      if (task.pages_total > 1) parts.push(`${task.pages_done || 0}/${task.pages_total} 页`);
+      if (task.status === 'pending' && task.queue_position) parts.push('第 ' + task.queue_position + ' 位');
+      if (task.status === 'success' && task.duration_sec) parts.push(fmtDuration(task.duration_sec));
+      if (task.status === 'running' && task.stage) parts.push(task.stage);
+      if (task.status === 'failed' && task.error) parts.push(task.error.slice(0, 60));
+      parts.push(fmtTime(task.created_at));
+      parts.forEach((text, i) => {
+        const span = document.createElement('span');
+        span.textContent = text;
+        if (i === parts.length - 1) span.style.color = 'var(--text-3)';
+        sub.appendChild(span);
+      });
+
+      const bar = document.createElement('div');
+      bar.className = 'progress';
+      const fill = document.createElement('i');
+      const pct = task.status === 'success' ? 100 : (task.progress || 0);
+      fill.style.width = Math.max(pct, task.status === 'pending' ? 2 : 4) + '%';
+      bar.appendChild(fill);
+
+      main.append(name, sub, bar);
+
+      const actions = document.createElement('div');
+      actions.className = 'task-actions';
+      if (task.status === 'pending' || task.status === 'running') {
+        const btn = document.createElement('button');
+        btn.textContent = '取消';
+        btn.addEventListener('click', (e) => { e.stopPropagation(); cancelTask(task.id); });
+        actions.appendChild(btn);
+      } else {
+        const del = document.createElement('button');
+        del.className = 'danger';
+        del.textContent = '删除';
+        del.addEventListener('click', (e) => { e.stopPropagation(); deleteTask(task.id); });
+        actions.appendChild(del);
+      }
+
+      item.append(dot, main, actions);
+      frag.appendChild(item);
+    });
+    list.innerHTML = '';
+    list.appendChild(frag);
+  }
+
+  async function cancelTask(id) {
+    try {
+      await api(`/api/tasks/${id}/cancel`, { method: 'POST' });
+      toast('已发送取消请求', 'ok');
+      refreshTasks();
+    } catch (err) { toast('取消失败：' + err.message, 'err'); }
+  }
+
+  async function deleteTask(id) {
+    if (!window.confirm('删除该任务及其结果文件？')) return;
+    try {
+      await api(`/api/tasks/${id}`, { method: 'DELETE' });
+      if (state.selectedId === id) {
+        state.selectedId = null;
+        state.loadedTaskId = null;
+        state.result = null;
+        renderEmptyResult();
+      }
+      toast('已删除', 'ok');
+      refreshTasks();
+    } catch (err) { toast('删除失败：' + err.message, 'err'); }
+  }
+
+  function selectTask(id) {
+    state.selectedId = id;
+    state.loadedTaskId = null;
+    renderTasks(state.queue || {});
+    const task = state.tasks.find((t) => t.id === id);
+    if (!task) return;
+    if (task.status === 'success') {
+      loadResult(id);
+    } else {
+      renderPendingResult(task);
+    }
+  }
+
+  function maybeLoadResult() {
+    if (!state.selectedId) return;
+    const task = state.tasks.find((t) => t.id === state.selectedId);
+    if (!task) return;
+    if (task.status === 'success' && state.loadedTaskId !== task.id) {
+      loadResult(task.id);
+    } else if (task.status !== 'success') {
+      renderPendingResult(task);
+    }
+  }
+
+  // ---------------------------------------------------------------- 结果
+  function setResultEnabled(enabled) {
+    $('#btn-copy').disabled = !enabled;
+    $$('[data-export]').forEach((b) => { b.disabled = !enabled; });
+  }
+
+  function renderEmptyResult() {
+    $('#result-title').textContent = '识别结果';
+    $('#result-meta').innerHTML = '';
+    $('#result-body').innerHTML = '<p class="empty">选择左侧任务查看识别结果</p>';
+    setResultEnabled(false);
+  }
+
+  function renderPendingResult(task) {
+    $('#result-title').textContent = task.filename;
+    $('#result-meta').innerHTML = '';
+    const body = $('#result-body');
+    setResultEnabled(false);
+    if (task.status === 'failed') {
+      body.innerHTML = '';
+      const p = document.createElement('p');
+      p.className = 'empty';
+      p.style.color = 'var(--err)';
+      p.textContent = '识别失败：' + (task.error || '未知错误');
+      body.appendChild(p);
+      const tip = document.createElement('p');
+      tip.className = 'empty';
+      tip.style.paddingTop = '0';
+      tip.textContent = '可联系管理员查看该任务的日志（后台 → 任务日志）排查环境或模型问题。';
+      body.appendChild(tip);
+      return;
+    }
+    body.innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.innerHTML = '<span class="spinner"></span> ' +
+      (task.status === 'cancelled' ? '任务已取消' :
+        (task.stage || (STATUS_TEXT[task.status] || '')) + `（${Math.round(task.progress || 0)}%）`);
+    body.appendChild(p);
+  }
+
+  async function loadResult(id) {
+    state.loadedTaskId = id;
+    $('#result-body').innerHTML = '<p class="empty"><span class="spinner"></span> 正在加载识别结果…</p>';
+    try {
+      const doc = await api(`/api/tasks/${id}/result`);
+      state.result = doc;
+      renderResult(doc);
+      setResultEnabled(true);
+    } catch (err) {
+      $('#result-body').innerHTML = '<p class="empty" style="color:var(--err)">加载失败：' +
+        escapeHtml(err.message) + '</p>';
+      setResultEnabled(false);
+    }
+  }
+
+  function escapeHtml(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function renderResult(doc) {
+    $('#result-title').textContent = doc.name || '识别结果';
+    const stats = doc.stats || {};
+    const meta = $('#result-meta');
+    meta.innerHTML = '';
+    const fields = [
+      ['产线', doc.pipeline || '-'],
+      ['页数', stats.pages || 0],
+      ['文本块', stats.blocks || 0],
+      ['表格', stats.tables || 0],
+      ['字符', stats.chars || 0],
+    ];
+    fields.forEach(([k, v]) => {
+      const span = document.createElement('span');
+      span.innerHTML = escapeHtml(k) + ' <b>' + escapeHtml(v) + '</b>';
+      meta.appendChild(span);
+    });
+    (doc.warnings || []).forEach((w) => {
+      const span = document.createElement('span');
+      span.style.color = 'var(--warn)';
+      span.textContent = '⚠ ' + w;
+      meta.appendChild(span);
+    });
+
+    const body = $('#result-body');
+    body.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    (doc.pages || []).forEach((page) => {
+      if ((doc.pages || []).length > 1) {
+        const sep = document.createElement('div');
+        sep.className = 'page-sep';
+        sep.textContent = `第 ${page.index} 页`;
+        frag.appendChild(sep);
+      }
+      (page.blocks || []).forEach((block) => {
+        if (block.type === 'table' && block.table) {
+          const wrap = document.createElement('div');
+          wrap.className = 'table-wrap';
+          wrap.appendChild(buildTable(block.table));
+          frag.appendChild(wrap);
+          return;
+        }
+        const text = (block.text || '').trim();
+        if (!text && block.type !== 'figure') return;
+        const div = document.createElement('div');
+        div.className = 'blk';
+        if (block.type === 'title') {
+          div.className += block.label === 'doc_title' || block.label === 'title' ? ' blk-title1' : ' blk-title2';
+        } else if (block.type === 'figure') {
+          div.className += ' blk-figure';
+        } else if (block.type === 'caption') {
+          div.className += ' blk-caption';
+        } else if (block.type === 'formula') {
+          div.className += ' blk-formula';
+        } else {
+          div.className += ' blk-text';
+        }
+        div.textContent = text || '[图片]';
+        frag.appendChild(div);
+      });
+    });
+    if (!frag.childNodes.length) {
+      body.innerHTML = '<p class="empty">未识别到内容，请检查文件清晰度或调整识别阈值</p>';
+      return;
+    }
+    body.appendChild(frag);
+  }
+
+  function buildTable(table) {
+    const el = document.createElement('table');
+    el.className = 'data';
+    const tbody = document.createElement('tbody');
+    const grid = [];
+    for (let r = 0; r < table.n_rows; r++) {
+      grid.push(new Array(table.n_cols).fill(null));
+    }
+    (table.cells || []).forEach((cell) => {
+      if (r0ok(cell.row, table.n_rows) && cell.col < table.n_cols) {
+        grid[cell.row][cell.col] = cell;
+      }
+    });
+    function r0ok(r, n) { return r >= 0 && r < n; }
+
+    for (let r = 0; r < table.n_rows; r++) {
+      const tr = document.createElement('tr');
+      for (let c = 0; c < table.n_cols; c++) {
+        const cell = grid[r][c];
+        if (!cell) continue;
+        const td = document.createElement(cell.is_header ? 'th' : 'td');
+        if (cell.rowspan > 1) td.rowSpan = Math.min(cell.rowspan, table.n_rows - r);
+        if (cell.colspan > 1) td.colSpan = Math.min(cell.colspan, table.n_cols - c);
+        td.textContent = cell.text || '';
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    el.appendChild(tbody);
+    return el;
+  }
+
+  // ---------------------------------------------------------------- 复制/导出
+  async function copyText() {
+    if (!state.selectedId) return;
+    try {
+      const res = await fetch(`/api/tasks/${state.selectedId}/text`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      toast(`已复制 ${text.length} 个字符到剪贴板`, 'ok');
+    } catch (err) {
+      toast('复制失败：' + err.message, 'err');
+    }
+  }
+
+  function exportResult(fmt) {
+    if (!state.selectedId) return;
+    const url = `/api/tasks/${state.selectedId}/export?fmt=${encodeURIComponent(fmt)}`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast('正在生成 ' + fmt.toUpperCase() + ' 文件…', 'ok');
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+})();

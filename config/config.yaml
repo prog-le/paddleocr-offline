@@ -1,0 +1,132 @@
+# =============================================================================
+# PaddleX OCR Web 配置文件
+# -----------------------------------------------------------------------------
+# 所有路径若为相对路径，均相对于项目根目录（本文件的上一级目录）。
+# 可用环境变量 PADDLEX_OCR_CONFIG 指定其它配置文件路径。
+# 常用环境变量覆盖见 .env.example 或 README「配置项说明」。
+# =============================================================================
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  # 单进程运行（任务队列在进程内，多进程会导致队列分裂，请勿修改 workers）
+  admin_username: admin
+  # 首次启动前请修改；也可用环境变量 PADDLEX_OCR_ADMIN_PASSWORD 覆盖
+  admin_password: PaddleX@2026
+  # 留空则自动生成并持久化到 data/.session_secret
+  session_secret: ""
+  session_ttl_sec: 7200
+  max_login_attempts: 10
+  login_lock_sec: 300
+  # 前台匿名会话隔离：每个浏览器一个签名 Cookie，只能看到自己上传的任务
+  # 换浏览器/清 Cookie/换设备 -> 看不到之前的任务（管理员后台仍可见全部）
+  client_cookie_name: pdx_sid
+  client_session_ttl_hours: 24
+  # 反向代理带前缀时填写，例如 /ocr
+  root_path: ""
+
+limits:
+  # 单个文件大小上限（MB）
+  max_upload_mb: 200
+  # 单次批量上传文件数上限
+  max_files_per_batch: 20
+  # 单个 PDF 最大页数，超出直接失败并提示
+  max_pdf_pages: 100
+  # 单页图像像素上限，超出会等比缩小后再推理（保护内存）
+  max_image_pixels: 50000000
+  # 单页推理前要求的最小空闲内存（MB）；不足则该任务失败并给建议，而不是被 OOM kill
+  # 容器内按 cgroup 限额计算；0 表示不检查（不推荐）
+  min_free_mem_mb: 600
+  # 单任务总超时（秒），在页边界检查
+  # 实测密集扫描件单页可达 120s，默认按 ~60 页预算；按机器性能与文档密度调整
+  task_timeout_sec: 7200
+  # 等待队列长度上限，超出则拒绝新任务（返回 429）
+  queue_max_size: 100
+
+ocr:
+  # 默认产线（前端下拉框可对每批文件单独选择，留空/未指定时用这里的默认值）
+  # 可选值 = config/pipelines/*.yaml 的文件名 + 内置 OCR。
+  # 下拉框固定顺序（与 ocr.pipeline 无关）：
+  #   1. OCR                  纯文字识别（PP-OCRv6，档位由 ocr_tier 控制）：最快，无表格结构
+  #   2. PP-StructureV3       通用版面解析v3（精简）：版面 + OCR + 表格（默认）
+  #   3. PP-StructureV3-full  通用版面解析v3（完整）：+ 区域检测/公式/印章
+  #   4. table_recognition_v2 通用表格识别：专用表格产线，只出表格、还原度最高
+  pipeline: PP-StructureV3
+  # 可用产线白名单；留空表示自动扫描 config/pipelines/*.yaml 并加上 OCR
+  # 例：available_pipelines: [PP-StructureV3, OCR]
+  available_pipelines: []
+  # ------------------------------------------------------------------ 运行设备
+  # auto：有可用加速卡就用（NVIDIA GPU / XPU / NPU），否则 CPU
+  # 也可写死：cpu / gpu / gpu:0 / gpu:1 / xpu:0 / npu:0
+  # Apple Silicon（macOS arm64）：Paddle 无 Metal/MPS 后端，**始终以 CPU 运行**，
+  #   配 gpu 会被强制降级并在页面/日志里提示。
+  device: auto
+
+  # 显存池占卡比例（0~0.95，0 = 用 Paddle 默认的按需增长）。
+  # gpu_mem_limit_mb > 0 时按「卡总显存」换算成比例，fraction 优先。
+  # 注意：这是**预留比例**，不是硬上限；真正的保护是下面的识别 batch 与单页像素上限。
+  gpu_mem_fraction: 0.0
+  gpu_mem_limit_mb: 0
+
+  # PP-OCRv6 档位：medium（精度最高，默认）/ small（平衡）/ tiny（最快，不支持日文）
+  # 只影响「纯文字识别」产线；改完需在后台「应用并重载」或重启进程。
+  ocr_tier: medium
+
+  # 批处理：文本识别 batch（GPU 可 16~32，CPU 建议 1~8）
+  # 显存不足时优先调小这个值；文本行方向 batch 仅在使用方向分类时生效。
+  text_rec_batch_size: 6
+  textline_batch_size: 6
+
+  # 并发推理任务数。CPU 建议 1；GPU 可 2（每个实例都会占一份显存）
+  concurrency: 1
+  # CPU 线程数，0 表示自动（Apple Silicon 默认 min(8, 核数)）；
+  # GPU 模式下该项只影响 PDF 渲染/前后处理，不占算力。
+  cpu_threads: 0
+  # PDF 渲染 DPI（150~300，越高越准但越慢越占内存）
+  pdf_dpi: 200
+  # 送入推理前把图像长边限制到该像素（0 表示不限制）
+  max_side_px: 2400
+  # 启动时后台预热模型（首次加载 20~90 秒，取决于磁盘与 CPU）
+  warmup_on_start: true
+  # 识别参数默认值，前端可在页面上临时调整
+  defaults:
+    use_doc_orientation_classify: false   # 文档方向分类（旋转页需开启）
+    use_doc_unwarping: false              # 弯曲矫正（拍照件可开启，较慢）
+    use_textline_orientation: false       # 文本行方向分类
+    use_table_recognition: true           # 表格识别
+    use_formula_recognition: false        # 公式识别（较慢，按需开启）
+    use_seal_recognition: false           # 印章识别
+    use_chart_recognition: false          # 图表转表格
+    layout_threshold: 0.5                 # 版面检测阈值
+    text_det_limit_side_len: 960          # 文本检测边长限制
+    text_det_limit_type: min              # min / max
+    text_det_thresh: 0.3                  # 文本检测像素阈值
+    text_det_box_thresh: 0.6              # 文本检测框阈值
+    text_det_unclip_ratio: 2.0            # 检测框扩张系数
+    text_rec_score_thresh: 0.0            # 识别置信度过滤阈值（0 表示不过滤）
+
+storage:
+  # 临时文件与识别结果目录
+  data_dir: data
+  log_dir: logs
+  # 结果保留时长（小时），超时由后台清理线程删除
+  retention_hours: 24
+  # 清理线程间隔（秒）
+  cleanup_interval_sec: 900
+  # 是否保留每页渲染图（排查问题有用，占磁盘）
+  keep_page_images: true
+  # 是否保留每页原始预测 JSON（排查推理报错强烈建议保留）
+  keep_raw_json: true
+
+export:
+  # 是否导出页眉/页脚/页码等版面噪声块
+  include_noise_blocks: false
+  # TXT 是否插入“第 N 页”分隔标记
+  txt_page_markers: true
+  # DOCX 页与页之间插入分页符
+  docx_page_break: true
+
+logging:
+  level: INFO
+  max_bytes: 10485760
+  backup_count: 5

@@ -1,0 +1,108 @@
+# label: 通用表格识别
+# description: 专用表格产线：表格分类 + 结构识别（有线/无线）+ 单元格检测，输出还原度最高的 HTML 表格，不解析正文段落
+# =============================================================================
+# 通用表格识别 v2（PaddleX 产线名：table_recognition_v2，PP-TableMagic）
+# -----------------------------------------------------------------------------
+# 适用：只要表格（报表、报价单、对账单、票据明细），不关心正文排版。
+#       相比通用版面解析，它把全部算力放在表格上：表格分类 → 结构识别（有线表用
+#       SLANeXt_wired、无线表用 SLANeXt_wireless）→ 单元格检测（RT-DETR）→ 按单元格
+#       切分 OCR 重新识别，因此跨行跨列/有线无线混合表的还原度更高。
+#
+# 与官方默认配置（paddlex --get_pipeline_config table_recognition_v2）的差异：
+#   1) LayoutDetection 用 PP-DocLayout_plus-L（比官方默认 PP-DocLayout-L 更新，
+#      且与「通用版面解析」产线共用同一份权重，不额外占磁盘）
+#   2) GeneralOCR 子产线用 PP-OCRv5_server_det / PP-OCRv5_server_rec
+#      （官方默认是 PP-OCRv4_server_det / PP-OCRv4_server_rec_doc；v5 精度更高，
+#        也与其它产线共用权重，保证同一张图在不同产线下文字结果一致）
+#   3) 其余（表格分类 SLANeXt/RT-DETR/方向矫正）保持官方默认
+#
+# 模型下载：
+#   python3 scripts/download_models.py --config config/pipelines/table_recognition_v2.yaml
+# 常用推理参数（前端「识别参数」面板可调）：
+#   use_layout_detection            是否先做版面检测定位表格（关掉则整页当一张表）
+#   use_ocr_results_with_table_cells 按单元格重新 OCR（默认 True，跨格断字问题更少）
+#   use_e2e_wired_table_rec_model   有线表改用端到端结构模型直接出单元格
+#   use_wireless_table_cells_trans_to_html  无线表按单元格几何直转 HTML
+# =============================================================================
+
+pipeline_name: table_recognition_v2
+
+use_doc_preprocessor: True
+use_layout_detection: True
+use_ocr_model: True
+
+SubModules:
+  LayoutDetection:
+    module_name: layout_detection
+    model_name: PP-DocLayout_plus-L
+    model_dir: null
+
+  TableOrientationClassify:
+    module_name: doc_text_orientation
+    model_name: PP-LCNet_x1_0_doc_ori
+    model_dir: null
+
+  TableClassification:
+    module_name: table_classification
+    model_name: PP-LCNet_x1_0_table_cls
+    model_dir: null
+
+  WiredTableStructureRecognition:
+    module_name: table_structure_recognition
+    model_name: SLANeXt_wired
+    model_dir: null
+
+  WirelessTableStructureRecognition:
+    module_name: table_structure_recognition
+    model_name: SLANeXt_wireless
+    model_dir: null
+
+  WiredTableCellsDetection:
+    module_name: table_cells_detection
+    model_name: RT-DETR-L_wired_table_cell_det
+    model_dir: null
+
+  WirelessTableCellsDetection:
+    module_name: table_cells_detection
+    model_name: RT-DETR-L_wireless_table_cell_det
+    model_dir: null
+
+SubPipelines:
+  DocPreprocessor:
+    pipeline_name: doc_preprocessor
+    use_doc_orientation_classify: True
+    use_doc_unwarping: True
+    SubModules:
+      DocOrientationClassify:
+        module_name: doc_text_orientation
+        model_name: PP-LCNet_x1_0_doc_ori
+        model_dir: null
+
+      DocUnwarping:
+        module_name: image_unwarping
+        model_name: UVDoc
+        model_dir: null
+
+  GeneralOCR:
+    pipeline_name: OCR
+    text_type: general
+    use_doc_preprocessor: False
+    use_textline_orientation: False
+    SubModules:
+      TextDetection:
+        module_name: text_detection
+        model_name: PP-OCRv5_server_det
+        model_dir: null
+        limit_side_len: 960
+        limit_type: max
+        max_side_limit: 4000
+        thresh: 0.3
+        box_thresh: 0.6
+        unclip_ratio: 2.0
+
+      TextRecognition:
+        module_name: text_recognition
+        model_name: PP-OCRv5_server_rec
+        model_dir: null
+        batch_size: 1
+        score_thresh: 0
