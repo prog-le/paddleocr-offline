@@ -1,0 +1,4 @@
+# 可选产线：Indra OCR（github.com/datalab-to/indra）
+# 安装：pip install -r requirements-indra.txt
+# 不安装不影响 PaddleX 四条产线；安装后重启服务，下拉框会多出「Indra OCR（轻量 CPU）」。
+indra-ocr==1.1.2

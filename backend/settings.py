@@ -91,6 +91,16 @@ DEFAULTS: Dict[str, Any] = {
             "text_rec_score_thresh": 0.0,
         },
     },
+    # 可选产线：Indra OCR（轻量 CPU 模型，需另行 pip install indra-ocr）
+    "indra": {
+        "enabled": True,
+        # 留空 = 使用 indra-ocr 自带缓存；离线部署建议指向已下载的目录，如 models/indra
+        "model_dir": "",
+        # ONNX Runtime 线程数：0 = 使用 indra-ocr 默认值（4）
+        "threads": 0,
+        "math": False,
+        "keep_furniture": False,
+    },
     "storage": {
         "data_dir": "data",
         "log_dir": "logs",
@@ -129,6 +139,10 @@ ENV_MAP = {
     "PADDLEX_OCR_MAX_UPLOAD_MB": "limits.max_upload_mb",
     "PADDLEX_OCR_RETENTION_HOURS": "storage.retention_hours",
     "PADDLEX_OCR_LOG_LEVEL": "logging.level",
+    # Indra OCR（可选产线）
+    "PADDLEX_OCR_INDRA_ENABLED": "indra.enabled",
+    "PADDLEX_OCR_INDRA_MODEL_DIR": "indra.model_dir",
+    "PADDLEX_OCR_INDRA_THREADS": "indra.threads",
     # 模型缓存目录（离线核心）：默认 <项目>/models/paddlex_home
     "PADDLEX_OCR_MODEL_HOME": "_model_home",
 }
@@ -425,6 +439,13 @@ class Settings:
                 "max_side_px": self.get("ocr.max_side_px"),
                 "defaults": self.get("ocr.defaults", {}),
             },
+            "indra": {
+                "enabled": bool(self.get("indra.enabled", True)),
+                "defaults": {
+                    "math": bool(self.get("indra.math", False)),
+                    "keep_furniture": bool(self.get("indra.keep_furniture", False)),
+                },
+            },
             "export": self.get("export", {}),
         }
 
@@ -448,6 +469,10 @@ def apply_paddlex_env(settings: Settings) -> None:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ.setdefault("MODELSCOPE_OFFLINE", "1")
     os.environ.setdefault("PADDLE_PDX_DISABLE_TELEMETRY", "True")
+    # Indra OCR 模型目录（可选产线）：配置了就锁定到本地目录，避免隐式联网
+    indra_dir = settings.get("indra.model_dir", "")
+    if indra_dir:
+        os.environ.setdefault("INDRA_OCR_MODEL_DIR", str(_abs_path(indra_dir)))
     # 显存池比例等必须在 import paddle 前落到环境变量（运行时 set_flags 只能兜底）
     try:
         from . import devices as _devices

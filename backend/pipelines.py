@@ -13,8 +13,9 @@
   * `ocr`       -> blocks_from_ocr()     ，参数集 OCR_PARAMS
   * `structure` -> blocks_from_structure()，参数集 STRUCTURE_PARAMS（PP-StructureV3 系）
   * `table`     -> blocks_from_table()   ，参数集 TABLE_PARAMS（table_recognition_v2）
+  * `indra`     -> IndraEngine 自带解析  ，参数集 INDRA_PARAMS（可选产线）
 
-展示顺序由 `PIPELINE_ORDER` 固定（纯文字 → 精简 → 完整 → 通用表格识别），
+展示顺序由 `PIPELINE_ORDER` 固定（纯文字 → 精简 → 完整 → 通用表格识别 → Indra），
 未登记的产线按 id 字母序排在末尾。
 """
 
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional
 
 from .engine import OCR_PARAMS, STRUCTURE_PARAMS, TABLE_PARAMS
+from .indra_engine import INDRA_PARAMS, indra_available
 from .settings import PROJECT_ROOT, Settings
 from .textio import read_text_file
 
@@ -52,20 +54,23 @@ DEFAULT_LABELS = {
     "PP-StructureV3-full": "通用版面解析 v3（完整）",
     "OCR": "纯文字识别（PP-OCRv6）",
     "table_recognition_v2": "通用表格识别",
+    "INDRA": "Indra OCR（轻量 CPU）",
 }
 DEFAULT_DESCRIPTIONS = {
     "PP-StructureV3": "版面检测 + OCR + 表格结构，不加载公式/印章/图表，速度快、体积小",
     "PP-StructureV3-full": "官方全能力：区域检测 + 公式 + 印章 + 图表，最慢但最完整",
     "OCR": "PP-OCRv6 文本检测+识别，无表格结构，最快；档位 tiny/small/medium 由 ocr.ocr_tier 控制",
     "table_recognition_v2": "专用表格产线：表格分类 + 结构识别（有线/无线）+ 单元格检测，表格还原度最高，不解析正文段落",
+    "INDRA": "1M 参数 ONNX 模型，纯 CPU、80+ 语言与手写体，输出版面块与 HTML 表格；需安装 indra-ocr",
 }
 
-# 前端下拉框的固定展示顺序（按需求：纯文字 → 精简 → 完整 → 通用表格识别）
+# 前端下拉框的固定展示顺序（纯文字 → 精简 → 完整 → 通用表格识别 → Indra）
 PIPELINE_ORDER = [
     "OCR",
     "PP-StructureV3",
     "PP-StructureV3-full",
     "table_recognition_v2",
+    "INDRA",
 ]
 
 # PaddleX 产线名 -> 结果解析类型（决定用哪个 blocks 解析器与哪些可调参数）
@@ -81,10 +86,12 @@ class PipelineSpec:
     id: str
     label: str
     arg: str  # 传给 create_pipeline 的参数（yaml 路径或产线名）
-    kind: str  # structure | ocr
+    kind: str  # structure | ocr | table | indra
     description: str = ""
     config_file: str = ""
     params: FrozenSet[str] = field(default_factory=frozenset)
+    # 推理后端：paddlex（默认）或 indra（可选轻量产线）
+    backend: str = "paddlex"
 
     @property
     def is_structure(self) -> bool:
@@ -97,6 +104,7 @@ class PipelineSpec:
             "kind": self.kind,
             "description": self.description,
             "config_file": self.config_file,
+            "backend": self.backend,
         }
 
 
@@ -159,6 +167,8 @@ def _params_for_kind(kind: str) -> FrozenSet[str]:
         return frozenset(OCR_PARAMS)
     if kind == "table":
         return frozenset(TABLE_PARAMS)
+    if kind == "indra":
+        return frozenset(INDRA_PARAMS)
     return frozenset(STRUCTURE_PARAMS)
 
 
@@ -214,6 +224,24 @@ def build_registry(settings: Settings) -> List[PipelineSpec]:
             )
         )
 
+    # 可选产线：Indra OCR。未安装 indra-ocr 时静默跳过，不影响 PaddleX 产线。
+    if settings.get("indra.enabled", True):
+        if indra_available():
+            specs.append(
+                PipelineSpec(
+                    id="INDRA",
+                    label=DEFAULT_LABELS["INDRA"],
+                    arg="indra",
+                    kind="indra",
+                    description=DEFAULT_DESCRIPTIONS["INDRA"],
+                    config_file="",
+                    params=frozenset(INDRA_PARAMS),
+                    backend="indra",
+                )
+            )
+        else:
+            log.info("已启用 Indra OCR，但未安装 indra-ocr；该产线暂不注册（pip install indra-ocr 后重启）")
+
     # 允许用 ocr.available_pipelines 限定展示/可用范围（例如只暴露精简版）
     allow = settings.get("ocr.available_pipelines") or []
     if isinstance(allow, list) and allow:
@@ -242,6 +270,7 @@ def build_registry(settings: Settings) -> List[PipelineSpec]:
                             description=spec.description,
                             config_file=str(cfg),
                             params=_params_for_kind(spec.kind),
+                            backend=spec.backend,
                         )
                     )
                 else:

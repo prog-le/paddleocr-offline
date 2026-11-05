@@ -1,6 +1,7 @@
 # PaddleX OCR Web · 离线文字与表格识别站点
 
 > 上传 **图片 / PDF** → PaddleX 产线 **OCR + 表格识别** → 网页预览 → 导出 **Word / Excel / TXT / Markdown**
+> 可选接入 **Indra OCR**（轻量 CPU 模型）：80+ 语言、手写体、自动纠偏，与 PaddleX 产线并列选择。
 > 支持 **x86_64 与 ARM64 (aarch64)**，支持 **本地原生部署** 与 **Docker 容器部署**，部署完成后 **运行期完全离线**。
 > CPU 即可运行，**可选 NVIDIA GPU (CUDA) 加速**；Apple Silicon 以原生 arm64 CPU 运行。
 
@@ -11,7 +12,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 文件输入 | PDF、JPG、PNG、BMP、TIFF、WEBP；支持多文件批量上传 |
-| 识别 | PaddleX 集成产线，**任务级可选**：纯文字识别、通用版面解析 v3（精简/完整）、通用表格识别 |
+| 识别 | PaddleX 集成产线，**任务级可选**：纯文字识别、通用版面解析 v3（精简/完整）、通用表格识别；可选接入 Indra OCR（轻量 CPU、80+ 语言、手写体） |
 | 多产线 | `config/pipelines/*.yaml` 即产线，前端下拉框按批选择；各产线按需懒加载、互不影响 |
 | 排版还原 | 按阅读顺序输出标题/段落/表格/图注；表格保留 `rowspan/colspan` 合并结构 |
 | 预览 | 网页直接渲染文本与表格（真实表格样式，非纯文本） |
@@ -38,6 +39,7 @@ paddlex-ocr-web/
 ├── README.md                        # 本文档
 ├── requirements.txt                 # 运行时依赖（Linux 目标机，版本已锁定）
 ├── requirements-macos.txt           # macOS 本机联调用（paddle 3.3.1）
+├── requirements-indra.txt           # 可选：Indra OCR 轻量产线依赖
 ├── .gitignore
 ├── .dockerignore
 ├── config/
@@ -55,6 +57,7 @@ paddlex-ocr-web/
 │   ├── pdfio.py                     # PDF 逐页渲染（PyMuPDF→pypdfium2→poppler 自动降级）
 │   ├── devices.py                   # 设备探测（CPU/GPU/XPU/NPU、Apple Silicon 限制、显存）
 │   ├── engine.py                    # 单条产线封装（实例池 + 结果归一化）
+│   ├── indra_engine.py              # Indra OCR 适配层（可选产线，结果归一化）
 │   ├── engine_pool.py               # 多产线路由（按任务所选产线懒加载）
 │   ├── pipelines.py                 # 产线注册表（扫描 config/pipelines/*.yaml）
 │   ├── mock_engine.py               # MOCK 引擎（无模型联调/自检）
@@ -85,6 +88,7 @@ paddlex-ocr-web/
 │   ├── verify_gpu_wheel.sh          # 校验 GPU 轮子（无需显卡）
 │   ├── gpu_deps.py                  # 补齐/检查 CUDA 运行库依赖（nvidia-*/cuda-python）
 │   ├── download_models.py           # 模型离线打包
+│   ├── download_indra_models.py     # Indra OCR 模型离线打包（可选）
 │   ├── make_offline_bundle.sh       # 生成整包 tar.gz（--device gpu 生成 GPU 包）
 │   ├── install_offline.sh           # 离线安装依赖（建 venv）
 │   ├── start.sh / stop.sh / status.sh
@@ -179,7 +183,7 @@ paddlex-ocr-web/
 > 双架构同样可用），按 §6.1 重新下载 wheel 与模型即可，代码无需改动。
 
 > **产线选择**：站点内置**四条** PaddleX 官方产线，按批选用（默认 `PP-StructureV3`），
-> 详见下一小节。`PP-StructureV3` 由「版面区域检测 + OCR 子产线 + 表格识别子产线」组成，
+> 另可选接入 **Indra OCR**（装在环境里才会出现），详见下一小节。`PP-StructureV3` 由「版面区域检测 + OCR 子产线 + 表格识别子产线」组成，
 > 输出的 `parsing_res_list` 已按阅读顺序排好，最适合"整页还原"；
 > 只要表格用 `table_recognition_v2`（表格还原度最高、不解析正文）；只要文字用 `OCR`（最快）。
 
@@ -193,6 +197,16 @@ paddlex-ocr-web/
 | 2 | `PP-StructureV3`（默认） | 通用版面解析 v3（精简） | 版面检测 + OCR + 表格结构 + 公式 | ~1.9 GB | 30~120 s | 常规公文、报价单、发票 |
 | 3 | `PP-StructureV3-full` | 通用版面解析 v3（完整） | 上述 + **区域检测** + **印章识别** + 文档方向/矫正 | ~2.0 GB | 40~180 s | 复杂版面、多栏、带红章/公式的正式文件 |
 | 4 | `table_recognition_v2` | 通用表格识别 | **专用表格产线**：表格分类 + 结构识别（有线 `SLANeXt_wired` / 无线 `SLANeXt_wireless`）+ 单元格检测（RT-DETR）+ 按单元格重新 OCR | 与精简版共用，另加 ~30 MB | 40~150 s | **只要表格**（报表、对账单、票据明细），跳过正文解析，表格还原度最高 |
+| 5 | `INDRA`（可选） | Indra OCR | Datalab 1M 参数 ONNX 模型：80+ 语言、手写体、任意角度页面；输出阅读顺序版面块与 HTML 表格 | ~76 MB | CPU 约 0.2~1 s | 轻量 CPU 场景、手写件、多语种；**不做单元格级表格还原** |
+
+> **Indra OCR（可选产线）**：默认不安装，安装后自动注册到下拉框末尾。
+> ```bash
+> pip install -r requirements-indra.txt   # 或 pip install indra-ocr
+> ```
+> 模型默认从 Hugging Face 下载（约 76 MB），但本项目运行期强制离线，请先在联网机器执行
+> `python3 scripts/download_indra_models.py`，再把 `models/indra` 拷走并设置
+> `indra.model_dir: models/indra`。未安装时该产线完全不可见，PaddleX 产线不受影响。
+> 模型权重遵循 OpenRAIL-M，商业使用前请确认许可。
 
 #### 纯文字识别已升级到 PP-OCRv6
 
@@ -451,6 +465,8 @@ python3 scripts/download_models.py                  # 不带参数 = 全部产�
 #    python3 scripts/download_models.py --config config/pipelines/table_recognition_v2.yaml
 #    python3 scripts/download_models.py --config config/pipelines/OCR.yaml   # PP-OCRv6
 #    python3 scripts/download_models.py --pipelines OCR                     # 官方内置 OCR
+#    可选 Indra OCR 模型（需先 pip install -r requirements-indra.txt）：
+#    python3 scripts/download_indra_models.py
 #    个别模型（如 PP-DocBlockLayout）BOS 源缺失，可切源：
 #    PADDLE_PDX_MODEL_SOURCE=ModelScope python3 scripts/download_models.py --config ...
 
@@ -616,6 +632,10 @@ sudo journalctl -u paddlex-ocr-web -f
 | `ocr.pdf_dpi` | `200` | PDF 渲染 DPI（150 快 / 300 准） |
 | `ocr.max_side_px` | `2400` | 送入推理前长边上限 |
 | `ocr.defaults.*` | 见文件 | 识别阈值与子模块开关（前端可临时覆盖） |
+| `indra.enabled` | `true` | 是否启用 Indra OCR 产线（需已安装 `indra-ocr`，改完重启生效） |
+| `indra.model_dir` | `""` | Indra 模型目录；留空用包内缓存，离线部署建议 `models/indra` |
+| `indra.threads` | `0` | ONNX Runtime 线程数，0=使用 indra-ocr 默认值（4） |
+| `indra.math` / `indra.keep_furniture` | `false` | 公式转 LaTeX / 保留页眉页脚默认值（前端可临时覆盖） |
 | `storage.retention_hours` | `24` | 结果保留时长，到期自动清理 |
 | `storage.keep_page_images` | `true` | 是否保留每页渲染图（排查用） |
 | `export.include_noise_blocks` | `false` | 是否导出页眉/页脚/页码 |
