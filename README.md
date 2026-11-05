@@ -15,10 +15,11 @@
 | 文件输入 | PDF、JPG、PNG、BMP、TIFF、WEBP；支持多文件批量上传 |
 | 识别 | PaddleX 集成产线，**任务级可选**：纯文字识别、通用版面解析 v3（精简/完整）、通用表格识别；可选接入 **pdf-inspector**（Firecrawl Rust 快抽，原生文本 PDF ~150 ms/页）与 **Indra OCR**（轻量 CPU、80+ 语言、手写体） |
 | 多产线 | `config/pipelines/*.yaml` 即产线，前端下拉框按批选择；各产线按需懒加载、互不影响 |
+| 智能产线选择 | 默认选中「⚡ 智能选择（推荐）」：上传后先嗅探真实文件类型，PDF 再调用 pdf-inspector 轻量分类，自动选最合适的产线；选择理由随任务返回并可解释。可用 `ocr.auto_pipeline: false` 关闭 |
 | 排版还原 | 按阅读顺序输出标题/段落/表格/图注；表格保留 `rowspan/colspan` 合并结构 |
 | 预览 | 网页直接渲染文本与表格（真实表格样式，非纯文本） |
 | 导出 | `.docx`（真实表格+合并单元格）、`.xlsx`（每表一个工作表+合并单元格）、`.txt`、`.md`（GFM 表格） |
-| 任务 | 队列、进度、逐页进度、成功/失败提示、取消、重试、删除；大 PDF 分页识别 |
+| 任务 | 队列、进度、逐页进度、成功/失败提示、取消、单任务重试、**按 batch 批量重跑**、删除；重跑可换产线 / 改参数（留空产线 = 重新智能选择）；大 PDF 分页识别 |
 | 会话隔离 | 每个浏览器一个**签名 Cookie 会话**，只能看到自己上传的任务与结果；管理员后台可见全部 |
 | 参数 | 页面可调：文本检测阈值、识别置信度、版面阈值、边长限制、各类子模块开关 |
 | 复制 | 识别结果一键复制全文 |
@@ -27,7 +28,7 @@
 | 双架构 | Linux x86_64/ARM64 同一套代码 + 按架构分目录的 wheel + 单 Dockerfile（`TARGETARCH`） |
 | 跨平台交付 | `scripts/build_deploy_package.sh --all` 一次生成 Linux amd64/arm64、Linux GPU、macOS arm64、Windows x64 离线包，自动处理 Paddle 版本 / wheel / 随包运行时的差异 |
 | 运行设备 | `auto` / `cpu` / `gpu:0`：启动自动探测，页面与后台显示实际设备；GPU 可配显存池与识别 batch。**Apple Silicon 明确只用 CPU**（Paddle 无 Metal/MPS） |
-| 免安装 Python | 交付包内自带**可重定位的 CPython 3.12.15**（x86_64 / aarch64），目标机不需要预装 python3；安装脚本自动解包到 `.runtime/python` 并据此建 venv |
+| 免安装 Python | 交付包内自带**可重定位的 CPython 3.12**（x86_64 / aarch64，默认取最新补丁版，可 `--python 3.12.15` 固定），目标机不需要预装 python3；安装脚本自动解包到 `.runtime/python` 并据此建 venv |
 
 **不做的事**：不接第三方云 OCR、不需要数据库、不需要登录即可识别（仅后台需登录）。
 GPU 是**可选加速**，不是必需项——没有 NVIDIA 卡时同一套代码以 CPU 运行。
@@ -41,6 +42,7 @@ paddlex-ocr-web/
 ├── README.md                        # 本文档
 ├── requirements.txt                 # 运行时依赖（Linux 目标机，版本已锁定）
 ├── requirements-macos.txt           # macOS 本机联调用（paddle 3.3.1）
+├── requirements-windows.txt         # Windows x64 离线部署依赖（paddle 3.3.1）
 ├── requirements-indra.txt           # 可选：Indra OCR 轻量产线依赖
 ├── requirements-pdf-inspector.txt   # 可选：pdf-inspector（Firecrawl Rust 快抽）产线依赖
 ├── .gitignore
@@ -59,16 +61,19 @@ paddlex-ocr-web/
 │   ├── storage.py                   # 任务目录 / 原子写 JSON / 过期清理
 │   ├── pdfio.py                     # PDF 逐页渲染（PyMuPDF→pypdfium2→poppler 自动降级）
 │   ├── devices.py                   # 设备探测（CPU/GPU/XPU/NPU、Apple Silicon 限制、显存）
+│   ├── memguard.py                  # 内存/显存余量检查（cgroup v1/v2、像素估算）
 │   ├── engine.py                    # 单条产线封装（实例池 + 结果归一化）
 │   ├── indra_engine.py              # Indra OCR 适配层（可选产线，结果归一化）
-│   ├── pdf_inspector_engine.py       # pdf-inspector 适配层（可选产线，整 PDF 一次性快抽）
+│   ├── pdf_inspector_engine.py      # pdf-inspector 适配层（可选产线，整 PDF 一次性快抽）
 │   ├── engine_pool.py               # 多产线路由（按任务所选产线懒加载）
 │   ├── pipelines.py                 # 产线注册表（扫描 config/pipelines/*.yaml）
+│   ├── smart_router.py              # 智能产线选择（文件嗅探 + PDF 分类 → 推荐产线）
 │   ├── mock_engine.py               # MOCK 引擎（无模型联调/自检）
-│   ├── manager.py                   # 任务队列、进度、超时、取消、日志
+│   ├── manager.py                   # 任务队列、进度、超时、取消、重试/批量重试、日志
 │   ├── security.py                  # 管理后台会话与登录限流
 │   ├── session.py                   # 前台匿名会话（签名 Cookie，任务隔离）
 │   ├── tableparse.py                # HTML/GFM 表格 → 带合并信息的二维网格
+│   ├── textio.py                    # 文本编码识别与安全解码
 │   ├── docmodel.py                  # 文档中间模型（预览与导出的唯一数据源）
 │   ├── converters/                  # 四种导出
 │   │   ├── to_docx.py  to_xlsx.py  to_txt.py  to_md.py
@@ -105,12 +110,20 @@ paddlex-ocr-web/
 ├── deploy/
 │   └── systemd/paddlex-ocr-web.service  # systemd 单元示例（离线环境变量已配好）
 ├── tests/                           # 无需模型的自动化测试
-│   ├── e2e.sh                       # 端到端接口测试（60 项，MOCK 引擎）
+│   ├── e2e.sh                       # 端到端接口测试（60 项，MOCK 引擎，自建临时数据目录）
 │   ├── test_devices.py              # 设备解析单测（29 项）
-│   ├── test_gpu_deps.py             # GPU 依赖闭包单测（10 项）
+│   ├── test_gpu_deps.py             # GPU 依赖闭包单测（26 项）
 │   ├── test_memguard.py             # 内存保护单测（18 项）
 │   ├── test_tableparse.py           # 表格 HTML/GFM 解析单测（14 项）
 │   ├── test_engine_utils.py         # 结果归一化单测（21 项）
+│   ├── test_pipelines_encoding.py   # 产线 yaml 编码容错单测（13 项）
+│   ├── test_manager_gpu_path.py     # GPU 任务路径回归（8 项）
+│   ├── test_deploy_targets.py       # 跨平台部署矩阵校验（42 项）
+│   ├── test_indra_engine.py         # Indra 适配层单测（pytest，7 项）
+│   ├── test_smart_router.py         # 智能产线路由单测（pytest，11 项）
+│   ├── test_pdf_inspector_engine.py # pdf-inspector 适配层单测（pytest，6 项）
+│   ├── test_install_verify_snippet.py # 安装校验片段（8 项）
+│   ├── test_gpu_install_paths.sh    # GPU 轮子目录安装路径回归（需 docker）
 │   ├── gen_assets.py                # 生成测试用图片/PDF
 │   └── verify_exports.py            # 导出文件回读校验
 ├── docker/
@@ -131,14 +144,16 @@ paddlex-ocr-web/
 │   ├── wheels/
 │   │   ├── amd64/                   # x86_64 的 cp312 wheel
 │   │   └── arm64/                   # aarch64 的 cp312 wheel
+│   ├── wheels-gpu/amd64/            # （可选）NVIDIA GPU 版 wheel，与 CPU 目录分开存放
 │   └── python/
 │       ├── amd64/                   # cpython-3.12.x+<rel>-x86_64-...-install_only.tar.gz
 │       └── arm64/                   # cpython-3.12.x+<rel>-aarch64-...-install_only.tar.gz
 ├── .runtime/                        # （安装时生成）解包后的随包 Python，可删后重装
 ├── data/                            # 运行期数据（自动创建，可随时清空）
 │   ├── tasks/<task_id>/             # 每任务：meta.json / input / pages / raw / exports
-│   ├── exports/                     # 导出缓存
-│   └── runtime_overrides.json       # 后台在线改的配置
+│   ├── exports/                     # 导出缓存（删除任务/过期清理时同步清除）
+│   ├── runtime_overrides.json       # 后台在线改的配置
+│   └── .session_secret              # 自动生成的会话签名密钥（首次启动）
 ├── logs/
 │   ├── app.log                      # 应用日志（滚动）
 │   └── server.log                   # 后台启动时的标准输出
@@ -148,17 +163,21 @@ paddlex-ocr-web/
 ### 数据流
 
 ```
-浏览器 ──multipart──▶ /api/tasks ──▶ 任务队列(ThreadPool) ──▶ 渲染(每页 JPEG)
-                                                              │
-                                                    PaddleX PP-StructureV3
-                                                    （版面 → OCR → 表格结构）
-                                                              │
-                        ┌─────────────────────────────────────┘
-                        ▼
-              result.json（Doc → pages → blocks）
-                        │
-        ┌───────────────┼────────────────┬──────────────┐
-        ▼               ▼                ▼              ▼
+浏览器 ──multipart──▶ /api/tasks ──▶ 文件头嗅探（pdf / image）
+                                            │
+                                  pipeline 为空？──是──▶ smart_router
+                                            │              （PDF 调 classify_pdf）
+                                           否                    │
+                                            └─────────┬──────────┘
+                                                      ▼
+                                     任务队列(ThreadPool) ──▶ 按选定产线推理
+                                            　　　　　　　  PaddleX / pdf-inspector / Indra
+                                                      │
+                                                      ▼
+                                      result.json（Doc → pages → blocks）
+                                                      │
+        ┌───────────────┬───────────────┬─────────────┘
+        ▼               ▼               ▼              ▼
      网页预览        docx 导出        xlsx 导出     txt / md 导出
 ```
 
@@ -168,7 +187,7 @@ paddlex-ocr-web/
 
 | 组件 | 版本 | 说明 |
 | --- | --- | --- |
-| Python | **3.12**（随包 **CPython 3.12.15**） | 本地部署用包内运行时，Docker 用 `python:3.12-slim-bookworm`；wheel 标签统一 `cp312`。兼容 3.10~3.13，但换版本须同时换运行时并重下 wheel |
+| Python | **3.12**（随包 CPython 3.12.x） | 本地部署用包内运行时，Docker 用 `python:3.12-slim-bookworm`；wheel 标签统一 `cp312`。项目按 3.12 交付与下载 wheel；换小版本须同时换运行时并重下 wheel（3.13 暂无对应 Paddle wheel） |
 | PaddlePaddle | **3.4.0 (CPU)** | 官方 CPU 源同时提供 `linux_x86_64` 与 `linux_aarch64` wheel |
 | PaddlePaddle（macOS / Windows） | **3.3.1 (CPU)** | PyPI 无 3.4.0 轮子；macOS 仅 Apple Silicon（`macosx_11_0_arm64`），Windows 仅 x64（`win_amd64`）；macOS 为本地联调，Windows 为原生部署（`requirements-windows.txt`） |
 | PaddlePaddle（NVIDIA GPU） | **3.4.0 (GPU)** | `paddlepaddle-gpu`，官方 `cu129`/`cu130` 源，仅 `linux_x86_64`；paddle 轮子约 **3.35 GB**；CUDA/cuDNN 运行库由 `nvidia-*` pip 包提供（另约 3 GB，随离线包分发） |
@@ -198,7 +217,8 @@ paddlex-ocr-web/
 
 ### 可选产线（任务级选择）
 
-下拉框为**固定顺序**（与 `ocr.pipeline` 无关，默认项只是被选中并标注「默认」）：
+下拉框顺序固定：第一项是 `⚡ 智能选择（推荐）`（见下面的「智能产线选择」），之后按
+下表排列（与 `ocr.pipeline` 无关，`ocr.pipeline` 对应项只是被选中并标注「默认」）：
 
 | # | 产线 id | 名称 | 能力 | 模型体积 | 单页耗时 | 适用 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -252,6 +272,10 @@ paddlex-ocr-web/
 - 输出字段不变（`rec_texts` / `rec_scores` / `rec_polys` / `dt_polys`），本项目的结果解析无需改动；
 - 官方指标基于内部评估集，**与 v5 不可直接对比**，迁移前请用自己的样本重测。
 
+> **智能选择怎么覆盖？** 下拉框默认项是「⚡ 智能选择」，想固定某条产线就在下拉框里显式选择；
+> API 传 `pipeline` 即视为手动指定，不会再被路由改写。规则、理由字段与关闭方式见上面的
+> 「智能产线选择」小节。
+>
 > **精简要表格怎么选？** `PP-StructureV3` 会顺带解析正文并做阅读顺序排版，适合"整页还原"；
 > `table_recognition_v2` 把算力全放在表格上（表格方向分类、有线/无线分别建模、按单元格切分 OCR），
 > 跨格断字与合并单元格更稳，但不输出正文段落。同一张报价单实测两者表格结构一致，
@@ -273,6 +297,39 @@ paddlex-ocr-web/
   ```
   想调整在列表中的位置，改 `backend/pipelines.py` 的 `PIPELINE_ORDER`（未登记的产线排在末尾）。
 - 想限制只暴露部分产线：`ocr.available_pipelines: [PP-StructureV3, OCR]`。
+
+### 智能产线选择（默认开启）
+
+前端下拉框第一项是 **`⚡ 智能选择（推荐）`**（提交时 `pipeline` 为空串）。后端在任务真正开始前做两步探测：
+
+1. `pdfio.probe` 按**文件头**判断真实类型（图片 / PDF，改扩展名骗不过去）；
+2. 仅当是 PDF 且已安装 `pdf-inspector` 时，调用 `classify_pdf`（不加载 OCR 模型）得到
+   `pdf_type` / `confidence` / `pages_needing_ocr`。
+
+路由规则（按顺序命中即返回）：
+
+| 条件 | 选择 | 理由 |
+| --- | --- | --- |
+| 用户显式指定且该产线可用 | 用户选的产线 | 绝不覆盖手动选择 |
+| `ocr.auto_pipeline: false` | `ocr.pipeline` 默认产线 | 关闭智能选择 |
+| 非 PDF（图片） | 默认产线 | 不做 PDF 分类 |
+| 未装 `pdf-inspector` / 分类失败 | 默认产线 | 零依赖兜底 |
+| `text_based` 且置信度 ≥ 0.4 且 `PDFINSPECTOR` 可用 | `PDFINSPECTOR` | 原生文本 PDF，~150 ms/页 |
+| `scanned` / `image_based` 且 `INDRA` 可用 | `INDRA` | 扫描件，轻量 CPU 模型 |
+| `mixed` 且需 OCR 页占比 < 30% 且 `PDFINSPECTOR` 可用 | `PDFINSPECTOR` | 大部分页可原生抽取 |
+| 其余（含扫描页较多 / 混合件） | 默认产线 | 走 PaddleX OCR |
+
+选择结果与理由会写进任务日志，并通过任务对象透出：
+
+| 字段 | 说明 |
+| --- | --- |
+| `pipeline` / `pipeline_label` | 排队时为 `null` / `⚡ 智能选择`，路由完成后回写实际产线 |
+| `pipeline_auto_reason` | 智能路由的理由（如「原生文本 PDF，Rust 快抽秒级处理」）；手动指定产线时为 `null` |
+| `auto_pipeline_reason`（结果页） | 同上的结果文档字段，前端结果页显示 ⚡ 徽标 |
+
+想强制某条产线：前端选具体产线，或 API 传 `pipeline=PP-StructureV3`；重跑时留空
+`pipeline` 即重新走智能选择。关闭方式：`ocr.auto_pipeline: false` 或
+`PADDLEX_OCR_AUTO_PIPELINE=false`。
 
 ### 运行设备（CPU / NVIDIA GPU / Apple Silicon）
 
@@ -443,6 +500,7 @@ PADDLEX_OCR_PIPELINE=OCR ./scripts/start.sh --port 8000
 | 场景 | 命令 |
 | --- | --- |
 | 我想先看界面（无需模型） | `./scripts/start.sh --mock` → <http://127.0.0.1:8000> |
+| 看接口文档（离线 Swagger） | <http://127.0.0.1:8000/api/docs>（原始 spec：`/api/openapi.json`） |
 | 本地离线部署 | 见 [§6](#6-本地离线部署步骤) |
 | Docker 离线部署 | 见 [§7](#7-docker-离线部署步骤) |
 
@@ -454,7 +512,7 @@ PADDLEX_OCR_PIPELINE=OCR ./scripts/start.sh --port 8000
 > **A. 联网机器**（准备依赖与模型） → **B. 离线服务器**（只安装和运行）
 > 若服务器本身能联网，可直接在服务器上执行 A 的步骤。
 
-> **目标机没有任何 Python 也可以**：交付包内自带 CPython 3.12.15 运行时，
+> **目标机没有任何 Python 也可以**：交付包内自带 CPython 3.12 运行时，
 > `install_offline.sh` 会把它解包到 `.runtime/python` 并用它创建 `.venv`，
 > 全程不调用系统 `python3`（也不需要 `python3-venv`/编译工具）。
 
@@ -607,7 +665,7 @@ cd paddlex-ocr-web-1.0.0-arm64
 
 | 路径 | 内容 |
 | --- | --- |
-| `.runtime/python/` | 包内 CPython 3.12.15 解包结果（约 200 MB），`.venv` 由它创建 |
+| `.runtime/python/` | 包内 CPython 3.12 解包结果（约 200 MB），`.venv` 由它创建 |
 | `.runtime_env` | 记录解释器路径 / Python 版本 / 安装时间，`preflight.sh` 会读 |
 
 > **不要移动项目目录后继续用旧 `.venv`**：venv 里的 python 是指向 `.runtime/python` 的
@@ -687,8 +745,10 @@ sudo journalctl -u paddlex-ocr-web -f
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `server.host` / `port` | `0.0.0.0` / `8000` | 监听地址；也可用 `PADDLEX_OCR_HOST/PORT` |
-| `server.admin_password` | `PaddleX@2026` | **上线前务必修改** |
+| `server.admin_username` / `admin_password` | `admin` / `PaddleX@2026` | 后台账号；**上线前务必修改口令** |
 | `server.session_ttl_sec` | `7200` | 后台登录有效期 |
+| `server.max_login_attempts` / `login_lock_sec` | `10` / `300` | 登录失败次数上限与锁定时长 |
+| `server.session_secret` | `""` | 会话/管理员 Cookie 签名密钥；留空自动生成并持久化到 `data/.session_secret` |
 | `server.client_session_ttl_hours` | `24` | 前台会话 Cookie 有效期（换/清 Cookie 后旧任务不可见） |
 | `server.client_cookie_name` | `pdx_sid` | 前台会话 Cookie 名 |
 | `server.root_path` | `""` | 反向代理子路径，如 `/ocr` |
@@ -696,9 +756,11 @@ sudo journalctl -u paddlex-ocr-web -f
 | `limits.max_files_per_batch` | `20` | 单次批量上传文件数 |
 | `limits.max_pdf_pages` | `100` | 单 PDF 最大页数，超出直接报错 |
 | `limits.max_image_pixels` | `50000000` | 单页像素上限，超出等比缩小 |
+| `limits.min_free_mem_mb` | `600` | 单页推理前要求的最小空闲内存；不足则该任务失败并给建议（容器内按 cgroup 限额） |
 | `limits.task_timeout_sec` | `7200` | 单任务超时（页边界检查）；密集扫描件约 120 s/页，按机器能力调 |
 | `limits.queue_max_size` | `100` | 等待队列上限，超出返回 429/400 |
-| `ocr.pipeline` | `PP-StructureV3` | **默认产线**，可选 `OCR` / `PP-StructureV3-full` / `table_recognition_v2`（不影响下拉框顺序） |
+| `ocr.pipeline` | `PP-StructureV3` | **默认产线**，可填任一已注册产线（含可选的 `PDFINSPECTOR` / `INDRA`）；不影响下拉框顺序 |
+| `ocr.auto_pipeline` | `true` | 未指定产线时是否启用智能选择（详见 §3「智能产线选择」）；`false` 则直接用 `ocr.pipeline` |
 | `ocr.available_pipelines` | `[]` | 白名单，留空=自动发现全部；例 `[PP-StructureV3, OCR]` |
 | `ocr.device` | `auto` | 运行设备：`auto` / `cpu` / `gpu` / `gpu:0` / `xpu:0` / `npu:0`；改完需重载产线 |
 | `ocr.gpu_mem_fraction` | `0.0` | Paddle 显存池占卡比例（0~0.95，0=按需增长） |
@@ -710,21 +772,39 @@ sudo journalctl -u paddlex-ocr-web -f
 | `ocr.concurrency` | `1` | 并发推理实例数（每实例 1.5~3 GB，CPU 建议 1） |
 | `ocr.pdf_dpi` | `200` | PDF 渲染 DPI（150 快 / 300 准） |
 | `ocr.max_side_px` | `2400` | 送入推理前长边上限 |
-| `ocr.defaults.*` | 见文件 | 识别阈值与子模块开关（前端可临时覆盖） |
+| `ocr.warmup_on_start` | `true` | 启动后后台预热默认产线（首次加载 20~90 秒） |
+| `ocr.defaults.*` | 见文件 | 识别阈值与子模块开关（前端可临时覆盖，并受参数白名单/范围约束） |
 | `indra.enabled` | `true` | 是否启用 Indra OCR 产线（需已安装 `indra-ocr`，改完重启生效） |
 | `indra.model_dir` | `""` | Indra 模型目录；留空用包内缓存，离线部署建议 `models/indra` |
 | `pdf_inspector.enabled` | `true` | 是否启用 PDF Inspector 产线（需已安装 `pdf-inspector`，改完重启生效；纯 Rust wheel，无模型/GPU/OCR runtime） |
 | `indra.threads` | `0` | ONNX Runtime 线程数，0=使用 indra-ocr 默认值（4） |
 | `indra.math` / `indra.keep_furniture` | `false` | 公式转 LaTeX / 保留页眉页脚默认值（前端可临时覆盖） |
 | `storage.retention_hours` | `24` | 结果保留时长，到期自动清理 |
+| `storage.cleanup_interval_sec` | `900` | 后台清理线程间隔（秒） |
 | `storage.keep_page_images` | `true` | 是否保留每页渲染图（排查用） |
+| `storage.keep_raw_json` | `true` | 是否保留每页原始预测 JSON（排查推理报错） |
 | `export.include_noise_blocks` | `false` | 是否导出页眉/页脚/页码 |
+| `export.txt_page_markers` | `true` | TXT 是否插入「第 N 页」分隔标记 |
+| `export.docx_page_break` | `true` | DOCX 页与页之间是否插入分页符 |
+| `logging.level` / `max_bytes` / `backup_count` | `INFO` / `10485760` / `5` | 日志级别与按大小轮转 |
 
-环境变量覆盖（容器/多实例常用）：`PADDLEX_OCR_PORT`、`PADDLEX_OCR_ADMIN_PASSWORD`、
-`PADDLEX_OCR_DATA_DIR`、`PADDLEX_OCR_LOG_DIR`、`PADDLEX_OCR_CONCURRENCY`、
-`PADDLEX_OCR_PDF_DPI`、`PADDLEX_OCR_MODEL_HOME`、`PADDLEX_OCR_LOG_LEVEL`、
-`PADDLEX_OCR_DEVICE`、`PADDLEX_OCR_GPU_MEM_MB`、`PADDLEX_OCR_GPU_MEM_FRACTION`、
-`PADDLEX_OCR_TEXT_REC_BATCH`、`PADDLEX_OCR_TIER`。
+环境变量覆盖（容器/多实例常用，优先级高于配置文件，后台在线修改值优先于两者）：
+
+| 变量 | 对应配置 |
+| --- | --- |
+| `PADDLEX_OCR_CONFIG` | 指定配置文件路径（默认 `config/config.yaml`） |
+| `PADDLEX_OCR_HOST` / `PADDLEX_OCR_PORT` / `PADDLEX_OCR_ROOT_PATH` | `server.host` / `port` / `root_path` |
+| `PADDLEX_OCR_ADMIN_USER` / `PADDLEX_OCR_ADMIN_PASSWORD` / `PADDLEX_OCR_SESSION_SECRET` | 管理员账号、口令、签名密钥 |
+| `PADDLEX_OCR_CLIENT_TTL_HOURS` | 前台会话有效期 |
+| `PADDLEX_OCR_DATA_DIR` / `PADDLEX_OCR_LOG_DIR` / `PADDLEX_OCR_LOG_LEVEL` | 数据、日志目录与日志级别 |
+| `PADDLEX_OCR_MODEL_HOME` | 模型目录（默认 `models/paddlex_home`） |
+| `PADDLEX_OCR_DEVICE` / `PADDLEX_OCR_GPU_MEM_MB` / `PADDLEX_OCR_GPU_MEM_FRACTION` | 运行设备与显存池 |
+| `PADDLEX_OCR_TEXT_REC_BATCH` / `PADDLEX_OCR_TIER` / `PADDLEX_OCR_CONCURRENCY` / `PADDLEX_OCR_PDF_DPI` | 识别 batch、OCR 档位、并发、渲染 DPI |
+| `PADDLEX_OCR_PIPELINE` / `PADDLEX_OCR_AUTO_PIPELINE` | 默认产线与智能选择开关 |
+| `PADDLEX_OCR_MAX_UPLOAD_MB` / `PADDLEX_OCR_RETENTION_HOURS` | 上传上限与结果保留期 |
+| `PADDLEX_OCR_INDRA_ENABLED` / `PADDLEX_OCR_INDRA_MODEL_DIR` / `PADDLEX_OCR_INDRA_THREADS` | Indra 产线 |
+| `PADDLEX_OCR_PDF_INSPECTOR_ENABLED` | pdf-inspector 产线开关 |
+| `PADDLEX_OCR_MOCK` | `1` 时启用 MOCK 引擎（不加载模型，联调/自检用） |
 
 后台「运行时配置」可**在线修改**白名单字段（限量、阈值、保留期、**设备/档位/批大小**等），
 写入 `data/runtime_overrides.json`；`ocr.pipeline` / `ocr.concurrency` 需改文件后重启。
@@ -972,22 +1052,22 @@ docker stats --no-stream paddlex-ocr-web
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/tasks` | multipart：`files`（可多个）+ `params`（JSON 字符串）+ `pipeline`（产线 id；留空 / `auto` = 智能选择）；返回 `batch_id` 与任务列表 |
-| `GET` | `/api/tasks?status=&limit=&keyword=` | 任务列表 + 队列统计 |
+| `GET` | `/api/tasks?status=&limit=&offset=&keyword=` | 任务列表 + 队列统计；`status` 取 `all/active/pending/running/success/failed/cancelled`，非法值返回 422 |
 | `GET` | `/api/tasks/{id}` | 单任务状态/进度/错误 |
 | `GET` | `/api/tasks/{id}/result` | 规范化识别结果（pages → blocks，含表格网格） |
-| `GET` | `/api/tasks/{id}/text` | 纯文本（一键复制用） |
-| `GET` | `/api/tasks/{id}/export?fmt=docx\|xlsx\|txt\|md` | 下载导出文件（`noise=1` 含页眉页脚） |
+| `GET` | `/api/tasks/{id}/text` | 纯文本（一键复制用；任务未完成 409，结果过期 410） |
+| `GET` | `/api/tasks/{id}/export?fmt=docx\|xlsx\|txt\|md` | 下载导出文件（`noise=1` 含页眉页脚；按 `fmt/noise` 等选项独立缓存） |
 | `POST` | `/api/tasks/{id}/cancel` | 取消（当前页结束后生效） |
 | `POST` | `/api/tasks/{id}/retry` | 重跑；可选 JSON `{"pipeline":"...","params":{...}}`，`pipeline` 留空 = 重新智能选择 |
 | `POST` | `/api/batches/{batch_id}/retry` | 批量重跑本会话该 batch 的终态任务（跳过排队/运行中）；body 同上 |
 | `DELETE` | `/api/tasks/{id}` | 删除任务与结果 |
-| `GET` | `/api/meta` | 前端配置：限额、默认参数、支持格式、**可用产线列表**、会话标识 |
-| `GET` | `/api/health` | 健康检查（`200` 正常 / `503` 降级，含 `issues`） |
+| `GET` | `/api/meta` | 前端配置：版本、限额、默认参数、支持格式、**可用产线列表**、`auto_pipeline`（是否开放智能选择）、`param_ranges`、`pdf_backend`、设备摘要、会话标识 |
+| `GET` | `/api/health` | 健康检查（`200` 正常 / `503` 降级，含 `issues`、`device`、内存/显存摘要） |
 | `POST` | `/api/admin/login` | 后台登录（表单 JSON），成功后 Set-Cookie |
 | `POST` | `/api/admin/logout` | 退出登录（清除 Cookie） |
 | `GET` | `/api/admin/session` | 校验管理员会话是否有效 |
 | `GET` | `/api/admin/overview` | 服务状态、模型清单、统计、系统信息 |
-| `GET` | `/api/admin/tasks` | 全量任务（含错误详情） |
+| `GET` | `/api/admin/tasks?status=&limit=&offset=&keyword=` | 全量任务（含错误详情、会话短标识；`limit` 最大 500） |
 | `POST` | `/api/admin/tasks/{id}/cancel` | 取消任意任务 |
 | `POST` | `/api/admin/tasks/{id}/retry` | 重跑任务；可选 body `{"pipeline":"...","params":{...}}` |
 | `POST` | `/api/admin/batches/{batch_id}/retry` | 批量重跑该 batch 的所有终态任务（不按会话过滤） |
@@ -996,8 +1076,29 @@ docker stats --no-stream paddlex-ocr-web
 | `GET` | `/api/admin/logs?file=app.log&lines=500` | 服务日志 |
 | `GET` | `/api/admin/config` | 读取当前配置（不含口令/密钥） |
 | `PATCH` | `/api/admin/config` | 在线改白名单配置 |
-| `POST` | `/api/admin/service/{pause\|resume\|warmup\|reload\|unload}?pipeline=<id>` | 服务控制；`warmup/reload/unload` 可指定产线（留空为默认产线），`unload` 用于释放某条产线的内存 |
-| `POST` | `/api/admin/maintenance/cleanup` | 立即清理过期任务 |
+| `POST` | `/api/admin/service/{pause\|resume\|warmup\|reload\|unload}?pipeline=<id>` | 服务控制；`warmup/unload` 留空为默认产线；`reload` 留空 = **重置并重建全部产线**（设备是全局配置），指定 `pipeline` 只重载该条；`unload` 释放该产线内存 |
+| `POST` | `/api/admin/maintenance/cleanup` | 立即清理过期任务（含导出缓存） |
+| `GET` | `/api/admin/health` | 管理员会话存活性检查（`{"ok":true,"time":...}`） |
+
+### 任务对象字段与状态码
+
+任务列表/详情/创建返回的任务对象包含：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` / `batch_id` / `filename` / `size` / `source_type` | 任务与批次标识、原始文件名、字节数、嗅探类型（`pdf`/`image`） |
+| `status` / `progress` / `stage` | `pending/running/success/failed/cancelled`、0~1 进度、当前阶段文案 |
+| `pipeline` / `pipeline_label` / `pipeline_auto_reason` | 实际产线、展示名、智能路由理由（手动指定时为 `null`） |
+| `params` | 经白名单过滤、阈值夹紧后实际生效的参数 |
+| `queue_position` / `running_count` | 排队位置、当前运行数（列表接口另返回顶层 `queue` 会话统计） |
+| `created_at` / `started_at` / `finished_at` / `duration_sec` | 时间戳（秒） |
+| `error` / `result_available` | 失败原因；`success` 时为 `true` |
+
+创建接口按**文件级**容错：部分文件非法不影响其余文件，返回 `errors: [{filename, error, code}]`；
+全部失败才返回非 2xx（`413` 超限、`429` 队列满、`400` 其他）。
+
+常见错误码：`404` 任务不存在或不属于当前会话；`409` 任务尚未完成（结果接口）；
+`410` 结果已过期清理；`422` 查询参数非法；`503` 无可用产线 / 服务降级。
 
 ### 会话 Cookie（前台接口必须带）
 
@@ -1100,7 +1201,7 @@ curl -c jar.txt -b jar.txt -OJ "http://127.0.0.1:8000/api/tasks/<id>/export?fmt=
 `./scripts/install_dev.sh`；生产部署仍走 Linux + 3.4.0。
 
 **Q4：目标机完全没有 python3，能装吗？**
-可以。交付包内自带 CPython 3.12.15 运行时（`offline/python/<arch>/cpython-3.12.*-install_only.tar.gz`），
+可以。交付包内自带 CPython 3.12 运行时（`offline/python/<arch>/cpython-3.12.*-install_only.tar.gz`），
 `./scripts/install_offline.sh` 会把它解包到 `.runtime/python` 并用它创建 `.venv`，全程不调用系统 python。
 装完用 `./scripts/preflight.sh` 确认「运行时来源：随包」即可。若包里没有运行时（打包时用了
 `--skip-runtime`），安装脚本会明确报错并提示去联网机执行 `./scripts/download_python_runtime.sh`。
@@ -1207,7 +1308,8 @@ docker inspect paddlex-ocr-web \
 且能接受更慢时选 `PP-StructureV3-full`；只要文字不要表格就选 `OCR`；
 **只要表格、不要正文**（报表/对账单/票据明细）选 `通用表格识别（table_recognition_v2）`——
 它对合并单元格与跨格断字最稳，导出 xlsx 的合并区域最准。
-同一批文件可以换产线重跑（重新上传或后台「重试」时改配置）。
+同一批文件可以换产线重跑：任务列表按 `batch_id` 分组，点「批量换产线重跑」或单任务「重跑」，
+在弹窗里选产线（含「⚡ 智能选择」）与参数即可；管理员后台也有相同的单条/批量重跑入口。
 
 **Q13：通用表格识别为什么只出了表格、没有正文？**
 这是该产线的设计：`table_recognition_v2` 只输出表格（`table_res_list`），不解析段落与阅读顺序。
@@ -1333,7 +1435,12 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 
 | 测试 | 命令 | 覆盖内容 | 是否需要模型 |
 | --- | --- | --- | --- |
+| 无模型单测总入口 | `python3 -m pytest -q tests` | 自动收集可 pytest 化的单测（智能路由 / pdf-inspector / Indra 及基础单测），当前 **31 项** | 否 |
 | GPU 依赖闭包单测 | `python3 tests/test_gpu_deps.py` | Linux 标记依赖、无标记传递依赖、版本不符、`~=` 兼容范围、Windows/macOS/aarch64/emscripten/extras 不误报、`python_version` 按目标解释器求值（26 项） | 否 |
+| 跨平台部署矩阵 | `python3 tests/test_deploy_targets.py` | 五个目标平台的架构/设备/Paddle 版本/wheel 目录/文件名推导；显式拒绝 macOS Intel、Windows ARM64、Linux arm64 GPU（42 项） | 否 |
+| 智能产线路由 | `python3 -m pytest -q tests/test_smart_router.py` | 用户显式指定优先、auto 开关、文本/扫描/混合 PDF 规则、产线缺失兜底、阈值边界（11 项） | 否 |
+| pdf-inspector 适配层 | `python3 -m pytest -q tests/test_pdf_inspector_engine.py` | Markdown 分块（标题/列表/代码块/表格）、整 PDF 一次性解析、图片拒绝、可选依赖缺失（6 项） | 否 |
+| Indra 适配层 | `python3 -m pytest -q tests/test_indra_engine.py` | 结果归一化、参数映射、模型目录/离线行为（7 项） | 否 |
 | GPU 安装路径回归（容器） | `bash tests/test_gpu_install_paths.sh` | GPU 轮子目录 `--device gpu` 能通过预检、混装 CPU/GPU 被拦、`--device cpu` 误配提示、`auto` 自动识别（4 场景 8 断言；需 docker，秒级） | 否 |
 | 安装结果校验片段 | `python3 tests/test_install_verify_snippet.py` | 无驱动 + 容错=退出 0 且给 WARN；无驱动 + 严格=退出 1；依赖齐全=打印 `cuda=False`（8 项） | 否 |
 | 配置编码容错 | `python3 tests/test_pipelines_encoding.py` | UTF-8 正常、GBK 配置正确解码、`._*.yaml` 二进制被跳过、截断 UTF-8 不崩、隐藏/空文件容忍（13 项） | 否 |
@@ -1348,9 +1455,9 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 | 仅测 Web 链路 | `.venv/bin/python scripts/smoke_test.py --mock --all` | 同上但不加载模型（秒级） | 否 |
 
 `tests/e2e.sh` 会在 8123 端口拉起一个 MOCK 服务（使用临时数据目录，不污染 `data/`），
-执行完自动关闭。最近一次执行结果：**60 项全部通过**（含多产线 6 项、会话隔离 10 项、设备 4 项、离线文档 7 项）
-（新浏览器列表为空、跨会话取结果/导出/取消/删除一律 404、篡改 Cookie 无数据泄露、
-管理员可见全部并带会话标识）。
+执行完自动关闭。最近一次执行结果：**60 项全部通过**（多产线、参数与限额、后台配置、设备切换、
+会话隔离、异常文件等）。会话隔离部分覆盖：新浏览器列表为空、跨会话取结果/导出/取消/删除
+一律 404、篡改 Cookie 无数据泄露、管理员可见全部并带会话标识。
 
 前端为原生 HTML/CSS/JS，无构建步骤、无 CDN；`/assets/*` 全部本地文件，
 断网环境打开页面不会出现样式或脚本加载失败。
@@ -1403,6 +1510,12 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 
 本项目调用 [PaddleX](https://github.com/PaddlePaddle/PaddleX) 官方产线与模型，
 使用前请遵守 PaddlePaddle / PaddleX 及其模型的开源许可（Apache-2.0）。
+
+可选产线的许可需单独确认：
+
+- [pdf-inspector](https://github.com/firecrawl/pdf-inspector)：MIT，纯 Rust wheel，无附加模型许可；
+- [Indra OCR](https://github.com/datalab-to/indra)：代码开源，但模型权重遵循 **OpenRAIL-M**，
+  商业使用前请自行评估其条款；未安装/未打包模型时本项目不包含该权重。
 
 ---
 

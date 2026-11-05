@@ -48,14 +48,14 @@ ocr:
   # 可选值 = config/pipelines/*.yaml 的文件名 + 内置 OCR。
   # 下拉框固定顺序（与 ocr.pipeline 无关）：
   #   1. OCR                  纯文字识别（PP-OCRv6，档位由 ocr_tier 控制）：最快，无表格结构
-  #   2. PP-StructureV3       通用版面解析v3（精简）：版面 + OCR + 表格（默认）
-  #   3. PP-StructureV3-full  通用版面解析v3（完整）：+ 区域检测/公式/印章
-  #   4. table_recognition_v2 通用表格识别：专用表格产线，只出表格、还原度最高
-  #   5. PDFINSPECTOR           PDF Inspector：Rust 实现的 PDF 分类 + 原生抽取；
-  #                             先分类（text_based/scanned/mixed），原生文本 PDF ~150ms/页
-  #                             抽结构化 Markdown；扫描件保留给 OCR。零额外模型依赖；
-  #                             需 pip install -r requirements-pdf-inspector.txt
-  #   6. INDRA                  Indra OCR：1M 参数轻量 CPU 模型，需 pip install indra-ocr
+  #   2. PDFINSPECTOR          PDF Inspector（可选）：Rust 实现的 PDF 分类 + 原生抽取；
+  #                            先分类（text_based/scanned/mixed），原生文本 PDF ~150ms/页
+  #                            抽结构化 Markdown；扫描件保留给 OCR。零额外模型依赖；
+  #                            需 pip install -r requirements-pdf-inspector.txt
+  #   3. PP-StructureV3       通用版面解析v3（精简）：版面 + OCR + 表格（默认）
+  #   4. PP-StructureV3-full  通用版面解析v3（完整）：+ 区域检测/公式/印章
+  #   5. table_recognition_v2 通用表格识别：专用表格产线，只出表格、还原度最高
+  #   6. INDRA                  Indra OCR（可选）：1M 参数轻量 CPU 模型，需 pip install indra-ocr
   pipeline: PP-StructureV3
   # 是否在前端"不选产线"时启用智能产线选择：
   # true  —— 用户不选 / 选 "auto" 时，先探测文件类型 +（PDF）调用 pdf-inspector 轻量分类，

@@ -35,7 +35,10 @@ def main(out_dir: str) -> int:
     target.mkdir(parents=True, exist_ok=True)
     pages = [make_page(i + 1) for i in range(2)]
     pages[0].save(target / "sample.png")
-    pages[0].save(target / "multi.pdf", save_all=True, append_images=pages[1:], resolution=150)
+    # 转成 P 模式再写 PDF：部分 Pillow 构建不带 JPEG 编码器，RGB 存 PDF 会 KeyError: 'JPEG'
+    pages[0].convert("P").save(
+        target / "multi.pdf", save_all=True, append_images=[p.convert("P") for p in pages[1:]], resolution=150
+    )
     print(f"generated: {target/'sample.png'} {target/'multi.pdf'}")
     return 0
 
