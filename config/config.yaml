@@ -51,7 +51,11 @@ ocr:
   #   2. PP-StructureV3       通用版面解析v3（精简）：版面 + OCR + 表格（默认）
   #   3. PP-StructureV3-full  通用版面解析v3（完整）：+ 区域检测/公式/印章
   #   4. table_recognition_v2 通用表格识别：专用表格产线，只出表格、还原度最高
-  #   5. INDRA                Indra OCR：1M 参数轻量 CPU 模型，需 pip install indra-ocr
+  #   5. PDFINSPECTOR           PDF Inspector：Rust 实现的 PDF 分类 + 原生抽取；
+  #                             先分类（text_based/scanned/mixed），原生文本 PDF ~150ms/页
+  #                             抽结构化 Markdown；扫描件保留给 OCR。零额外模型依赖；
+  #                             需 pip install -r requirements-pdf-inspector.txt
+  #   6. INDRA                  Indra OCR：1M 参数轻量 CPU 模型，需 pip install indra-ocr
   pipeline: PP-StructureV3
   # 可用产线白名单；留空表示自动扫描 config/pipelines/*.yaml 并加上 OCR
   # 例：available_pipelines: [PP-StructureV3, OCR]
@@ -147,6 +151,18 @@ indra:
   math: false
   # 默认关闭：保留页眉/页脚/页码块（开启后导出内容更杂）
   keep_furniture: false
+
+# =============================================================================
+# 可选产线：pdf-inspector（github.com/firecrawl/pdf-inspector）
+# -----------------------------------------------------------------------------
+# 纯 Rust wheel（~6.5 MB），不需要模型目录 / GPU / OCR runtime；
+# 4 平台全覆盖（linux x86_64/aarch64 · macOS arm64 · Windows x64）。
+# 启用：pip install -r requirements-pdf-inspector.txt
+# 关闭：把 enabled 改成 false，或用环境变量 PADDLEX_OCR_PDF_INSPECTOR_ENABLED=false
+# 注意：pdf-inspector 只能处理完整 PDF（产线入口 routes/public.py 会在传图片到本产线时拒绝）。
+# =============================================================================
+pdf_inspector:
+  enabled: true
 
 logging:
   level: INFO

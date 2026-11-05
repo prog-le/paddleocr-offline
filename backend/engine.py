@@ -400,12 +400,14 @@ class PaddleXEngine:
             self.label = getattr(spec, "label", spec.id)
             self.pipeline_arg = spec.arg
             self.kind = spec.kind
+            self.backend = getattr(spec, "backend", "paddlex")
         else:
             self.pipeline_id = resolve_pipeline_name(settings.get("ocr.pipeline", "PP-StructureV3"))
             self.pipeline_name = self.pipeline_id
             self.label = self.pipeline_id
             self.pipeline_arg = self._resolve_pipeline_arg(settings, self.pipeline_name)
             self.kind = "ocr" if self.pipeline_name.upper() == "OCR" else "structure"
+            self.backend = "paddlex"
         self.concurrency = max(int(settings.get("ocr.concurrency", 1) or 1), 1)
         self.log = get_logger("ocr.engine")
 

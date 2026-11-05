@@ -61,6 +61,11 @@ class EnginePool:
 
             self.log.info("使用 Indra OCR 后端：%s", spec.id)
             return IndraEngine(self.settings, spec)
+        if getattr(spec, "backend", "paddlex") == "pdf_inspector":
+            from .pdf_inspector_engine import PdfInspectorEngine
+
+            self.log.info("使用 pdf-inspector 后端：%s", spec.id)
+            return PdfInspectorEngine(self.settings, spec)
         if self._real_cls is None:
             from .engine import PaddleXEngine
 
