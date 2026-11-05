@@ -374,6 +374,32 @@ async def retry_task(request: Request, task_id: str) -> Dict[str, Any]:
     return _public_task(meta)
 
 
+@router.post("/api/batches/{batch_id}/retry")
+async def retry_batch(request: Request, batch_id: str) -> Dict[str, Any]:
+    """批量重跑同一 batch 中属于当前会话的任务（owner 权限）。
+
+    运行中/排队中的自动跳过。可选 JSON body 同上：
+    {"pipeline": "", "params": {...}}  → 全批统一换产线 / 改参数
+    """
+    manager = request.app.state.manager
+    pipeline = None
+    params = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            if "pipeline" in body:
+                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
+            if "params" in body and isinstance(body["params"], dict):
+                params = body["params"]
+    except Exception:
+        body = None  # noqa: F841
+    try:
+        result = manager.retry_batch(batch_id, owner=_sid(request), pipeline=pipeline, params=params)
+    except TaskError as exc:
+        raise HTTPException(status_code=404 if "不属于" in str(exc) else 400, detail=str(exc)) from exc
+    return result
+
+
 @router.delete("/api/tasks/{task_id}")
 async def delete_task(request: Request, task_id: str) -> Dict[str, Any]:
     manager = request.app.state.manager

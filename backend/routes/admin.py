@@ -214,6 +214,27 @@ async def admin_retry(request: Request, task_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/batches/{batch_id}/retry")
+async def admin_retry_batch(request: Request, batch_id: str) -> Dict[str, Any]:
+    """批量重跑同一 batch 下的所有终态任务（管理员有权绕过 owner 过滤）。"""
+    require_admin(request)
+    pipeline = None
+    params = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            if "pipeline" in body:
+                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
+            if "params" in body and isinstance(body["params"], dict):
+                params = body["params"]
+    except Exception:
+        body = None  # noqa: F841
+    try:
+        return request.app.state.manager.retry_batch(batch_id, owner=None, pipeline=pipeline, params=params)
+    except TaskError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.delete("/tasks/{task_id}")
 async def admin_delete(request: Request, task_id: str) -> Dict[str, Any]:
     require_admin(request)

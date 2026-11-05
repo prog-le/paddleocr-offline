@@ -252,6 +252,28 @@
     const desc = $('#pipeline-desc');
     if (desc) desc.textContent = p.description || p.label;
 
+    // auto kind：顶部智能提示（上传前就能看到会怎么选）
+    let autoHint = $('#auto-hint');
+    if (p.kind === 'auto') {
+      if (!autoHint) {
+        autoHint = document.createElement('p');
+        autoHint.id = 'auto-hint';
+        autoHint.className = 'hint';
+        autoHint.style.cssText = 'color: var(--accent, #60a5fa); font-size: 11px;';
+        if (desc && desc.parentNode) desc.parentNode.insertBefore(autoHint, desc.nextSibling);
+      }
+      const hasPdi = (state.pipelines || []).some(x => x.id === 'PDFINSPECTOR');
+      const hasIndra = (state.pipelines || []).some(x => x.id === 'INDRA');
+      const lines = ['上传后先按文件类型分类 → 自动选最合适的产线：'];
+      if (hasPdi) lines.push('• 原生文本 PDF → PDFINSPECTOR（Rust 快抽，~150ms/页）');
+      if (hasIndra) lines.push('• 扫描/图片 PDF → INDRA（轻量 OCR，~0.2-1s/页）');
+      if (!hasPdi && !hasIndra) lines.push('• 统一走默认产线');
+      autoHint.textContent = lines.join(' ');
+      autoHint.style.display = '';
+    } else if (autoHint) {
+      autoHint.style.display = 'none';
+    }
+
     // auto kind：智能路由不确定最终产线，不禁用任何参数，让用户按实际需求调
     const unsupported = p.kind === 'auto'
       ? {}
@@ -498,78 +520,121 @@
       list.innerHTML = '<p class="empty">本会话还没有任务，先上传文件吧</p>';
       return;
     }
-    const frag = document.createDocumentFragment();
+
+    // ---- 按 batch_id 分组（同一上传的文件是同一组） ----
+    const groups = {};
+    const order = [];
     state.tasks.forEach((task) => {
-      const item = document.createElement('div');
-      item.className = 'task-item ' + task.status + (task.id === state.selectedId ? ' active' : '');
-      item.dataset.id = task.id;
-      item.addEventListener('click', () => selectTask(task.id));
-
-      const dot = document.createElement('span');
-      dot.className = 'dot ' + task.status;
-
-      const main = document.createElement('div');
-      main.className = 'task-main';
-      const name = document.createElement('div');
-      name.className = 'task-name';
-      name.textContent = task.filename;
-      name.title = task.filename;
-      const sub = document.createElement('div');
-      sub.className = 'task-sub';
-      const parts = [];
-      parts.push(STATUS_TEXT[task.status] || task.status);
-      if (task.pipeline_label) parts.push(task.pipeline_label);
-      if (task.pipeline_auto_reason) parts.push('⚡ ' + task.pipeline_auto_reason);
-      parts.push(fmtSize(task.size));
-      if (task.pages_total > 1) parts.push(`${task.pages_done || 0}/${task.pages_total} 页`);
-      if (task.status === 'pending' && task.queue_position) parts.push('第 ' + task.queue_position + ' 位');
-      if (task.status === 'success' && task.duration_sec) parts.push(fmtDuration(task.duration_sec));
-      if (task.status === 'running' && task.stage) parts.push(task.stage);
-      if (task.status === 'failed' && task.error) parts.push(task.error.slice(0, 60));
-      parts.push(fmtTime(task.created_at));
-      parts.forEach((text, i) => {
-        const span = document.createElement('span');
-        span.textContent = text;
-        if (i === parts.length - 1) span.style.color = 'var(--text-3)';
-        sub.appendChild(span);
-      });
-
-      const bar = document.createElement('div');
-      bar.className = 'progress';
-      const fill = document.createElement('i');
-      const pct = task.status === 'success' ? 100 : (task.progress || 0);
-      fill.style.width = Math.max(pct, task.status === 'pending' ? 2 : 4) + '%';
-      bar.appendChild(fill);
-
-      main.append(name, sub, bar);
-
-      const actions = document.createElement('div');
-      actions.className = 'task-actions';
-      if (task.status === 'pending' || task.status === 'running') {
-        const btn = document.createElement('button');
-        btn.textContent = '取消';
-        btn.addEventListener('click', (e) => { e.stopPropagation(); cancelTask(task.id); });
-        actions.appendChild(btn);
-      } else {
-        // 终态（success / failed / cancelled）：可以换产线重跑或删除
-        const retry = document.createElement('button');
-        retry.className = 'primary';
-        retry.textContent = '换产线重跑';
-        retry.addEventListener('click', (e) => {
-          e.stopPropagation();
-          openRetryDialog(task);
-        });
-        actions.appendChild(retry);
-        const del = document.createElement('button');
-        del.className = 'danger';
-        del.textContent = '删除';
-        del.addEventListener('click', (e) => { e.stopPropagation(); deleteTask(task.id); });
-        actions.appendChild(del);
-      }
-
-      item.append(dot, main, actions);
-      frag.appendChild(item);
+      const key = task.batch_id || task.id;
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push(task);
     });
+
+    const frag = document.createDocumentFragment();
+
+    order.forEach((key) => {
+      const batch = groups[key];
+
+      // 分组 header
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 4px 4px;border-bottom:1px solid var(--border,#374151);margin:4px 0;';
+      const left = document.createElement('div');
+      left.style.cssText = 'font-size:11px;opacity:.7;';
+      const ok = batch.filter(t => t.status === 'success').length;
+      const run = batch.filter(t => t.status === 'running' || t.status === 'pending').length;
+      const fail = batch.filter(t => t.status === 'failed' || t.status === 'cancelled').length;
+      left.textContent = `${key} · ${batch.length} 文件` +
+        (ok ? ` · ✅ ${ok}` : '') + (run ? ` · ⏳ ${run}` : '') + (fail ? ` · ❌ ${fail}` : '');
+      header.appendChild(left);
+
+      const terminal = batch.filter(t => t.status === 'success' || t.status === 'failed' || t.status === 'cancelled');
+      if (terminal.length > 0) {
+        const batchBtn = document.createElement('button');
+        batchBtn.className = 'primary';
+        batchBtn.style.cssText = 'font-size:11px;padding:2px 8px;';
+        batchBtn.textContent = `批量换产线重跑 ${terminal.length}`;
+        batchBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openBatchRetryDialog(key, batch);
+        });
+        header.appendChild(batchBtn);
+      }
+      frag.appendChild(header);
+
+      // 组内任务
+      batch.forEach((task) => {
+        const item = document.createElement('div');
+        item.className = 'task-item ' + task.status + (task.id === state.selectedId ? ' active' : '');
+        item.dataset.id = task.id;
+        item.style.cssText = 'margin-bottom:4px;';
+        item.addEventListener('click', () => selectTask(task.id));
+
+        const dot = document.createElement('span');
+        dot.className = 'dot ' + task.status;
+
+        const main = document.createElement('div');
+        main.className = 'task-main';
+        const name = document.createElement('div');
+        name.className = 'task-name';
+        name.textContent = task.filename;
+        name.title = task.filename;
+        const sub = document.createElement('div');
+        sub.className = 'task-sub';
+        const parts = [];
+        parts.push(STATUS_TEXT[task.status] || task.status);
+        if (task.pipeline_label) parts.push(task.pipeline_label);
+        if (task.pipeline_auto_reason) parts.push('⚡ ' + task.pipeline_auto_reason);
+        parts.push(fmtSize(task.size));
+        if (task.pages_total > 1) parts.push(`${task.pages_done || 0}/${task.pages_total} 页`);
+        if (task.status === 'pending' && task.queue_position) parts.push('第 ' + task.queue_position + ' 位');
+        if (task.status === 'success' && task.duration_sec) parts.push(fmtDuration(task.duration_sec));
+        if (task.status === 'running' && task.stage) parts.push(task.stage);
+        if (task.status === 'failed' && task.error) parts.push(task.error.slice(0, 60));
+        parts.push(fmtTime(task.created_at));
+        parts.forEach((text, i) => {
+          const span = document.createElement('span');
+          span.textContent = text;
+          if (i === parts.length - 1) span.style.color = 'var(--text-3)';
+          sub.appendChild(span);
+        });
+
+        const bar = document.createElement('div');
+        bar.className = 'progress';
+        const fill = document.createElement('i');
+        const pct = task.status === 'success' ? 100 : (task.progress || 0);
+        fill.style.width = Math.max(pct, task.status === 'pending' ? 2 : 4) + '%';
+        bar.appendChild(fill);
+
+        main.append(name, sub, bar);
+
+        const actions = document.createElement('div');
+        actions.className = 'task-actions';
+        if (task.status === 'pending' || task.status === 'running') {
+          const btn = document.createElement('button');
+          btn.textContent = '取消';
+          btn.addEventListener('click', (e) => { e.stopPropagation(); cancelTask(task.id); });
+          actions.appendChild(btn);
+        } else {
+          const retry = document.createElement('button');
+          retry.className = 'primary';
+          retry.textContent = '换产线重跑';
+          retry.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openRetryDialog(task);
+          });
+          actions.appendChild(retry);
+          const del = document.createElement('button');
+          del.className = 'danger';
+          del.textContent = '删除';
+          del.addEventListener('click', (e) => { e.stopPropagation(); deleteTask(task.id); });
+          actions.appendChild(del);
+        }
+
+        item.append(dot, main, actions);
+        frag.appendChild(item);
+      });
+    });
+
     list.innerHTML = '';
     list.appendChild(frag);
   }
@@ -665,6 +730,83 @@
       }
       refreshTasks();
     } catch (err) { toast('重跑失败：' + err.message, 'err'); }
+  }
+
+  // ---- 批量重跑 dialog ----
+  function openBatchRetryDialog(batchId, batchTasks) {
+    const terminal = batchTasks.filter(t => t.status === 'success' || t.status === 'failed' || t.status === 'cancelled');
+    if (!terminal.length) { toast('这个 batch 没有终态任务可重跑', 'err'); return; }
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--bg, #1f2937);color:var(--fg, #e5e7eb);padding:24px;border-radius:10px;min-width:440px;max-width:520px;box-shadow:0 10px 40px rgba(0,0,0,.4);';
+
+    // 每种产线在 batch 中占比的快速统计（让用户知道多数选的是啥）
+    const byPipeline = {};
+    terminal.forEach(t => { byPipeline[t.pipeline_label || '未知'] = (byPipeline[t.pipeline_label || '未知'] || 0) + 1; });
+    const pipelineStats = Object.entries(byPipeline).map(([k, v]) => `${esc(k)}: ${v}`).join('，');
+
+    box.innerHTML = `
+      <div style="font-weight:600;margin-bottom:12px;">批量换产线重跑 <span style="opacity:.7;font-weight:400;">${esc(batchId)}</span></div>
+      <div style="font-size:12px;opacity:.7;margin-bottom:14px;">
+        将重跑 ${terminal.length} 个终态任务（运行中/排队中的自动跳过）。<br>
+        当前各产线分布：${esc(pipelineStats) || '全部手动选'}
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:12px;opacity:.8;">产线（应用到整个 batch）</label><br>
+        <select id="batch-pipeline" style="width:100%;padding:6px 8px;margin-top:4px;background:var(--panel,#111827);color:inherit;border:1px solid var(--border,#374151);border-radius:6px;">
+          <option value="">⚡ 智能选择（每个文件独立路由）</option>
+          ${(state.pipelines || [])
+            .filter(p => p.kind !== 'auto')
+            .map(p => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
+            .join('')}
+        </select>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:12px;opacity:.8;">参数（JSON，可选，留空沿用上次）</label><br>
+        <textarea id="batch-params" rows="3" placeholder='{"math":true}' style="width:100%;padding:6px 8px;margin-top:4px;background:var(--panel,#111827);color:inherit;border:1px solid var(--border,#374151);border-radius:6px;font-family:monospace;font-size:12px;"></textarea>
+      </div>
+      <div style="text-align:right;gap:8px;display:flex;justify-content:flex-end;">
+        <button id="batch-cancel">取消</button>
+        <button id="batch-ok" class="primary">批量重跑 ${terminal.length}</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector('#batch-cancel').addEventListener('click', close);
+    overlay.querySelector('#batch-ok').addEventListener('click', async () => {
+      const pid = overlay.querySelector('#batch-pipeline').value;
+      const pRaw = overlay.querySelector('#batch-params').value.trim();
+      const body = {};
+      if (pid) body.pipeline = pid;  // 智能选择时不传 pipeline（让后端不覆盖）
+      if (pRaw) {
+        try { body.params = JSON.parse(pRaw); }
+        catch { toast('参数 JSON 格式错误', 'err'); return; }
+      }
+      close();
+      await rerunBatch(batchId, body, terminal.length);
+    });
+  }
+
+  async function rerunBatch(batchId, body, expectedTerminal) {
+    try {
+      const res = await api(`/api/batches/${batchId}/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      const msgs = [`已触发重跑：共 ${res.total}，成功 ${res.retried}，跳过 ${res.skipped}`];
+      if (res.errors && res.errors.length) {
+        msgs.push(`${res.errors.length} 个有错误：` + res.errors.slice(0, 3).map(e => `${e.id}(${e.reason})`).join('；'));
+        if (res.errors.length > 3) msgs.push(`…还有 ${res.errors.length - 3} 个`);
+      }
+      toast(msgs.join('｜'), res.retried > 0 ? 'ok' : 'err');
+      refreshTasks();
+    } catch (err) { toast('批量重跑失败：' + err.message, 'err'); }
   }
 
   function selectTask(id) {

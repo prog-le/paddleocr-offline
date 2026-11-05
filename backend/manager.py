@@ -793,6 +793,51 @@ class TaskManager:
         self._dispatch(task_id)
         return self.get(task_id) or meta
 
+    def retry_batch(
+        self,
+        batch_id: str,
+        owner: Optional[str] = None,
+        pipeline: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """重跑同一 batch 的所有终态任务。运行中/排队中的自动跳过。
+
+        返回 {total, retried, skipped, errors}，errors 是 [{id, reason}] 列表。
+        """
+        with self._lock:
+            candidates = [
+                dict(m) for m in self._tasks.values()
+                if m.get("batch_id") == batch_id
+            ]
+        if owner is not None:
+            candidates = [m for m in candidates if m.get("owner") == owner]
+        if not candidates:
+            raise TaskError(f"batch {batch_id} 下没有任务（或不属于当前会话）")
+
+        retried = 0
+        skipped = 0
+        errors: List[Dict[str, Any]] = []
+        for meta in candidates:
+            tid = meta["id"]
+            if meta["status"] in ("pending", "running"):
+                skipped += 1
+                continue
+            try:
+                self.retry(tid, pipeline=pipeline, params=params)
+                retried += 1
+            except TaskError as exc:
+                skipped += 1
+                errors.append({"id": tid, "reason": str(exc)})
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"id": tid, "reason": f"{type(exc).__name__}: {exc}"})
+        return {
+            "batch_id": batch_id,
+            "total": len(candidates),
+            "retried": retried,
+            "skipped": skipped,
+            "errors": errors,
+        }
+
     def pause(self) -> None:
         self._paused = True
 
