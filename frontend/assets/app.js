@@ -551,6 +551,15 @@
         btn.addEventListener('click', (e) => { e.stopPropagation(); cancelTask(task.id); });
         actions.appendChild(btn);
       } else {
+        // 终态（success / failed / cancelled）：可以换产线重跑或删除
+        const retry = document.createElement('button');
+        retry.className = 'primary';
+        retry.textContent = '换产线重跑';
+        retry.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openRetryDialog(task);
+        });
+        actions.appendChild(retry);
         const del = document.createElement('button');
         del.className = 'danger';
         del.textContent = '删除';
@@ -586,6 +595,76 @@
       toast('已删除', 'ok');
       refreshTasks();
     } catch (err) { toast('删除失败：' + err.message, 'err'); }
+  }
+
+  // ---- 换产线重跑（简易 modal，无依赖） ----
+  function openRetryDialog(task) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--bg, #1f2937);color:var(--fg, #e5e7eb);padding:24px;border-radius:10px;min-width:380px;max-width:480px;box-shadow:0 10px 40px rgba(0,0,0,.4);';
+
+    box.innerHTML = `
+      <div style="font-weight:600;margin-bottom:12px;">换产线重跑 <span style="opacity:.7;font-weight:400;">${esc(task.filename || '')}</span></div>
+      <div style="font-size:12px;opacity:.7;margin-bottom:14px;">
+        当前产线：${esc(task.pipeline_label || '-')}
+        ${task.pipeline_auto_reason ? `<br>上次智能选择理由：${esc(task.pipeline_auto_reason)}` : ''}
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:12px;opacity:.8;">产线</label><br>
+        <select id="retry-pipeline" style="width:100%;padding:6px 8px;margin-top:4px;background:var(--panel,#111827);color:inherit;border:1px solid var(--border,#374151);border-radius:6px;">
+          <option value="">⚡ 智能选择（推荐）</option>
+          ${(state.pipelines || [])
+            .filter(p => p.kind !== 'auto')
+            .map(p => `<option value="${esc(p.id)}">${esc(p.label)}${p.id ? '' : ''}</option>`)
+            .join('')}
+        </select>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:12px;opacity:.8;">参数（JSON，可选，留空沿用上次）</label><br>
+        <textarea id="retry-params" rows="3" placeholder='{"math":true}' style="width:100%;padding:6px 8px;margin-top:4px;background:var(--panel,#111827);color:inherit;border:1px solid var(--border,#374151);border-radius:6px;font-family:monospace;font-size:12px;">${task.params ? esc(JSON.stringify(task.params)) : ''}</textarea>
+      </div>
+      <div style="text-align:right;gap:8px;display:flex;justify-content:flex-end;">
+        <button id="retry-cancel">取消</button>
+        <button id="retry-ok" class="primary">重跑</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector('#retry-cancel').addEventListener('click', close);
+    overlay.querySelector('#retry-ok').addEventListener('click', async () => {
+      const pid = overlay.querySelector('#retry-pipeline').value;
+      const pRaw = overlay.querySelector('#retry-params').value.trim();
+      const body = {};
+      if (pid !== task.pipeline) body.pipeline = pid;
+      if (pRaw) {
+        try { body.params = JSON.parse(pRaw); }
+        catch { toast('参数 JSON 格式错误', 'err'); return; }
+      }
+      close();
+      await rerunTask(task.id, body);
+    });
+  }
+
+  async function rerunTask(taskId, body) {
+    try {
+      await api(`/api/tasks/${taskId}/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      toast('已重排队，等待处理', 'ok');
+      if (state.selectedId === taskId) {
+        state.loadedTaskId = null;
+        state.result = null;
+        renderEmptyResult();
+      }
+      refreshTasks();
+    } catch (err) { toast('重跑失败：' + err.message, 'err'); }
   }
 
   function selectTask(id) {

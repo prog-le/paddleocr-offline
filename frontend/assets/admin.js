@@ -336,7 +336,7 @@
       const err = t.error ? `<div class="hint" style="color:var(--err)">${esc(String(t.error).slice(0, 120))}</div>` : '';
       return `<tr>
         <td class="mono">${esc(t.id)}</td>
-        <td>${esc(t.filename)}${err}${t.pipeline_label ? `<div class="hint">产线：${esc(t.pipeline_label)}</div>` : ''}</td>
+        <td>${esc(t.filename)}${err}${t.pipeline_label ? `<div class="hint">产线：${esc(t.pipeline_label)}${t.pipeline_auto_reason ? ` · ⚡ ${esc(t.pipeline_auto_reason)}` : ''}</div>` : ''}</td>
         <td class="mono" title="浏览器会话标识">${esc(t.session || '-')}</td>
         <td><span class="badge ${STATUS_CLASS[t.status] || ''}">${esc(STATUS_TEXT[t.status] || t.status)}</span></td>
         <td class="mono">${Math.round(t.progress || 0)}%</td>

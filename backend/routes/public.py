@@ -130,18 +130,33 @@ async def create_tasks(
     except ValueError:
         raise HTTPException(status_code=400, detail="params 必须是合法 JSON") from None
 
-    # 产线选择：留空用默认；填了但不存在则明确报错（列出可选项）
-    if pipeline:
+    # 产线选择：
+    #   - 空字符串 / auto-tokens → 触发 smart_router（manager.run 里按文件类型逐个智能选）
+    #   - 有效 id → 强制该产线（所有上传文件共用同一条）
+    #   - 无效 id → 报错列出可选项
+    from backend.smart_router import AUTO_TOKENS
+
+    pipeline_chosen_by_user = bool(pipeline) and pipeline not in AUTO_TOKENS
+    if pipeline_chosen_by_user:
         spec = find_spec(specs, pipeline)
         if spec is None:
             available = "、".join(f"{sp.id}（{sp.label}）" for sp in specs)
             raise HTTPException(status_code=400, detail=f"未知产线：{pipeline}。可选：{available}")
     else:
+        # 智能路由：pipeline 字段传空字符串，manager.run 里会对每个文件独立探测并选产线
+        spec = None
+    if spec is None and not pipeline_chosen_by_user:
+        # 后端配置里关闭了 auto_pipeline → 回落到默认产线
+        if not settings.get("ocr.auto_pipeline", True):
+            spec = find_spec(specs, manager.default_pipeline) or (specs[0] if specs else None)
+    if spec is None and not pipeline_chosen_by_user:
+        # smart_router 里没有任何可用产线时回退到默认
         spec = find_spec(specs, manager.default_pipeline) or (specs[0] if specs else None)
-    if spec is None:
+    if spec is None and pipeline_chosen_by_user:
         raise HTTPException(status_code=503, detail="服务未配置任何可用产线")
 
-    clean_params = _sanitize_params(raw_params, spec)
+    # 智能路由模式：params 用默认值（smart_router 会按选中产线自动选对应参数）
+    clean_params = _sanitize_params(raw_params, spec) if spec else (raw_params or {})
     limit = settings.max_upload_bytes
     staging = settings.data_dir / "uploads"
     staging.mkdir(parents=True, exist_ok=True)
@@ -327,6 +342,35 @@ async def cancel_task(request: Request, task_id: str) -> Dict[str, Any]:
         meta = manager.cancel(task_id)
     except TaskError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _public_task(meta)
+
+
+@router.post("/api/tasks/{task_id}/retry")
+async def retry_task(request: Request, task_id: str) -> Dict[str, Any]:
+    """重试自己的任务（owner 权限）。可选 JSON body: {"pipeline": "...", "params": {...}}
+
+    - pipeline="" / "auto" / 空  → 重新触发智能产线选择
+    - pipeline="PP-StructureV3"  → 强制换产线
+    - params 只覆盖传入的字段
+    """
+    manager = request.app.state.manager
+    if not manager.get_owned(task_id, _sid(request)):
+        raise HTTPException(status_code=404, detail="任务不存在或不属于当前会话")
+    pipeline = None
+    params = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            if "pipeline" in body:
+                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
+            if "params" in body and isinstance(body["params"], dict):
+                params = body["params"]
+    except Exception:
+        body = None  # noqa: F841
+    try:
+        meta = manager.retry(task_id, pipeline=pipeline, params=params)
+    except TaskError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _public_task(meta)
 
 

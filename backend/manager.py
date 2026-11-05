@@ -284,8 +284,10 @@ class TaskManager:
                 "duration_sec": None,
                 "error": None,
                 "params": params or {},
-                "pipeline": pipeline or self.default_pipeline,
-                "pipeline_label": pipeline_label or (pipeline or self.default_pipeline),
+                # pipeline=None 表示智能路由（由 run() 里的 smart_router 按文件类型选）
+                "pipeline": pipeline,
+                "pipeline_label": pipeline_label or pipeline or "",
+                "pipeline_auto_reason": None,
                 "retry_of": None,
                 # 归属会话：公开接口按此过滤，管理员接口忽略
                 "owner": owner or "",
