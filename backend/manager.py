@@ -302,6 +302,7 @@ class TaskManager:
                     meta["stored_name"] = dest.name
                     self.storage.save_meta(meta)
             except OSError as exc:
+                self.storage.delete_task(task_id)
                 raise TaskError(f"保存上传文件失败：{exc}") from exc
             self._tasks[task_id] = meta
         self._dispatch(task_id)
@@ -382,10 +383,15 @@ class TaskManager:
             tfile.write(f"依据：{rec.rationale}")
             tlog.info("任务 %s | %s", task_id, log_line)
 
-            # 把最终选择写回 meta，便于状态查询 / 重试时保留
-            meta["pipeline"] = pipeline_id
-            meta["pipeline_auto_reason"] = rec.reason
-            self._update(task_id, meta=meta, persist=True)
+            # 把最终选择写回 meta，便于状态查询 / 重试时保留。
+            # 只有智能路由才记录理由；用户手动选择不显示"⚡"徽标。
+            self._update(
+                task_id,
+                pipeline=pipeline_id,
+                pipeline_label=rec.pipeline_label or pipeline_id,
+                pipeline_auto_reason=None if pipeline_chosen_by_user else rec.reason,
+                persist=True,
+            )
 
             engine = self.engine.get(pipeline_id) if hasattr(self.engine, "get") else self.engine
             stage(f"加载识别模型（{getattr(engine, 'label', pipeline_id)}）…", 1)
@@ -400,17 +406,6 @@ class TaskManager:
             self._update(task_id, pages_total=pages_total, source_type=kind, persist=True)
             tfile.write(f"文件类型={kind} 页数={pages_total} 大小={meta.get('size')}B")
             tlog.info("开始处理 %s（%s，%s 页）", meta.get("filename"), kind, pages_total)
-
-            # pdf-inspector（Rust 原生抽取）：吃完整 PDF 一次性解析，不适合逐页渲染。
-            # 图片（kind != pdf）不路由到这里。路由完成后 doc.pages 会被填充，
-            # 后续逐页 OCR 循环会因为 pages 已被填满而被跳过。
-            backend = getattr(engine, "backend", "paddlex")
-            pdf_inspector_done = False
-            if backend == "pdf_inspector" and kind == "pdf":
-                self._run_pdf_inspector(
-                    task_id, src, pages_total, params, engine, doc, tfile, tlog
-                )
-                pdf_inspector_done = True
 
             dpi = int(self.settings.get("ocr.pdf_dpi", 200) or 200)
             max_side = int(self.settings.get("ocr.max_side_px", 2400) or 0)
@@ -460,6 +455,20 @@ class TaskManager:
                     rec.reason if not pipeline_chosen_by_user else None
                 ),
             )
+
+            # pdf-inspector（Rust 原生抽取）：吃完整 PDF 一次性解析，不适合逐页渲染。
+            # 必须在 doc / params 创建之后调用；图片不会路由到这里。
+            backend = getattr(engine, "backend", "paddlex")
+            pdf_inspector_done = False
+            if backend == "pdf_inspector":
+                if kind != "pdf":
+                    raise TaskError(
+                        "PDFINSPECTOR 产线只支持 PDF 文件；图片请选择 PaddleX 产线或「智能选择」"
+                    )
+                self._run_pdf_inspector(
+                    task_id, src, pages_total, params, engine, doc, tfile, tlog
+                )
+                pdf_inspector_done = True
 
             for index in range(pages_total):
                 # pdf-inspector 已完成整 PDF 快抽，跳过逐页渲染 + OCR 循环
@@ -672,21 +681,19 @@ class TaskManager:
                     self.storage.raw_dir(task_id) / "document.json",
                     raw,
                 )
-            # pdf-inspector 不区分页——输出是整 PDF 的 Markdown。
-            # 为了保持与 PaddleX 逐页模式一致，我们把同一份 blocks 挂到每个 Page 上，
-            # 并把 raw / 总耗时挂到最后一页的 raw 里供前端展示。
+            # pdf-inspector 的输出是整份 PDF 的 Markdown，不带逐页归属。
+            # 因此把全部 blocks 只挂到第 1 页，其余页留空——否则导出（docx/md/txt）
+            # 会把整份文档重复 N 次。总耗时挂到最后一页，raw 另存 raw/document.json。
             for i in range(pages_total):
                 page_no = i + 1
                 is_last = page_no == pages_total
-                page_raw = dict(raw) if is_last else None
-                page_blocks = list(blocks)  # 全量 blocks 复制给每页——导出时用户可见，单页预览会稍长
+                page_blocks = list(blocks) if page_no == 1 else []
                 page = Page(
                     index=page_no,
                     width=0,
                     height=0,
                     blocks=page_blocks,
                     elapsed_ms=elapsed_ms if is_last else 0,
-                    raw=page_raw,
                 )
                 doc.pages.append(page)
 
@@ -715,11 +722,12 @@ class TaskManager:
                     height=0,
                     blocks=[],
                     elapsed_ms=elapsed_ms if is_last else 0,
-                    raw=dict(raw) if is_last else None,
                 )
                 doc.pages.append(page)
 
-        self._update(task_id, doc=doc, pages_done=pages_total, progress=95, persist=True)
+        # 注意：不要把 Doc 对象塞进 meta（meta 会被持久化成 meta.json，
+        # default=str 会把整份文档 repr 成超大字符串）；doc 由主流程 save_result 落盘。
+        self._update(task_id, pages_done=pages_total, progress=95, persist=True)
         # 填充 doc.pages 结束；主 run 后续会继续做 save_result / stats / 导出
 
     # ------------------------------------------------------------------ 控制
@@ -752,6 +760,22 @@ class TaskManager:
             raise TaskError("任务不存在")
         if meta["status"] in ("pending", "running"):
             raise TaskError("任务正在队列中，无需重试")
+        if self._paused:
+            raise TaskError("服务已暂停接收新任务，请联系管理员")
+        # 换产线时提前校验：未知产线 / 用 PDFINSPECTOR 处理图片都直接报可读错误
+        from .smart_router import AUTO_TOKENS
+
+        if pipeline and pipeline not in AUTO_TOKENS:
+            specs = list(getattr(self.engine, "specs", []) or [])
+            spec = next((s for s in specs if getattr(s, "id", "") == pipeline), None)
+            if spec is None:
+                available = "、".join(f"{getattr(s, 'id', '')}（{getattr(s, 'label', '')}）" for s in specs)
+                raise TaskError(f"未知产线：{pipeline}。可选：{available}")
+            source_type = str(meta.get("source_type") or "")
+            if not source_type:
+                source_type = "pdf" if str(meta.get("filename", "")).lower().endswith(".pdf") else "image"
+            if getattr(spec, "kind", "") == "pdf_inspector" and source_type != "pdf":
+                raise TaskError("PDFINSPECTOR 产线只支持 PDF 文件；图片请选择 PaddleX 产线或「智能选择」")
         with self._lock:
             pending = sum(1 for m in self._tasks.values() if m.get("status") == "pending")
             if pending >= int(self.settings.get("limits.queue_max_size", 100) or 100):
@@ -761,6 +785,8 @@ class TaskManager:
 
         for sub in ("pages", "raw", "exports"):
             shutil.rmtree(self.storage.task_dir(task_id) / sub, ignore_errors=True)
+        # 公开导出接口缓存在 data/exports/<task_id>，换产线后必须失效
+        shutil.rmtree(self.storage.exports / task_id, ignore_errors=True)
         for name in ("result.json", "task.log"):
             try:
                 (self.storage.task_dir(task_id) / name).unlink()
@@ -785,7 +811,9 @@ class TaskManager:
         # 用户换了产线 / 参数：让 run 重新做智能路由（pipeline 为空/auto 触发）
         if pipeline is not None:
             update_kwargs["pipeline"] = pipeline
-            update_kwargs["pipeline_label"] = pipeline
+            update_kwargs["pipeline_label"] = (
+                "⚡ 智能选择" if (not pipeline or pipeline in AUTO_TOKENS) else pipeline
+            )
             update_kwargs["pipeline_auto_reason"] = None
         if params is not None:
             update_kwargs["params"] = params

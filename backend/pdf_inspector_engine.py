@@ -31,8 +31,9 @@ from .logging_setup import get_logger
 from .settings import Settings
 from .tableparse import Table, parse_markdown_table
 
-# 允许前端透传的 pdf-inspector 参数（其余 PaddleX 参数对它无意义）
-PDF_INSPECTOR_PARAMS = {"include_headers", "include_footers"}
+# pdf-inspector 1.25 的 process_pdf(path, pages=None) 不接受页眉/页脚等抽取选项，
+# 因此本产线不暴露可调参数（避免 API 声称支持但实际无效）。
+PDF_INSPECTOR_PARAMS: set = set()
 
 # pdf-inspector Markdown -> Block.type 映射
 HEADING_LEVEL_RE = re.compile(r"^(#{1,4})\s+")
@@ -288,6 +289,12 @@ class PdfInspectorEngine:
             self._status.update(state="idle", loaded=False)
 
     # ------------------------------------------------------------------ 推理
+    def predict_page(self, image_path: Path, params: Dict[str, Any]) -> PageResult:
+        """PDFINSPECTOR 只处理 PDF；图片误选该产线时给出可读错误。"""
+        raise EngineError(
+            "PDFINSPECTOR 产线只支持 PDF 文件；图片请选择 PaddleX 产线或「智能选择」"
+        )
+
     def predict_pdf(self, pdf_path: Path, params: Dict[str, Any]) -> PageResult:
         """整 PDF 一次性解析（pdf-inspector 的优势：单 parse 多页面）。
 

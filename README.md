@@ -203,13 +203,13 @@ paddlex-ocr-web/
 | # | 产线 id | 名称 | 能力 | 模型体积 | 单页耗时 | 适用 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `OCR` | 纯文字识别（**PP-OCRv6**） | 文本检测 + 识别，无表格结构；档位 tiny/small/medium 由 `ocr.ocr_tier` 控制 | 0.13~0.2 GB | 3~15 s | 只要文字、追求速度 |
-| 2 | `PP-StructureV3`（默认） | 通用版面解析 v3（精简） | 版面检测 + OCR + 表格结构 + 公式 | ~1.9 GB | 30~120 s | 常规公文、报价单、发票 |
-| 3 | `PP-StructureV3-full` | 通用版面解析 v3（完整） | 上述 + **区域检测** + **印章识别** + 文档方向/矫正 | ~2.0 GB | 40~180 s | 复杂版面、多栏、带红章/公式的正式文件 |
-| 4 | `table_recognition_v2` | 通用表格识别 | **专用表格产线**：表格分类 + 结构识别（有线 `SLANeXt_wired` / 无线 `SLANeXt_wireless`）+ 单元格检测（RT-DETR）+ 按单元格重新 OCR | 与精简版共用，另加 ~30 MB | 40~150 s | **只要表格**（报表、对账单、票据明细），跳过正文解析，表格还原度最高 |
-| 5 | `PDFINSPECTOR`（可选） | PDF Inspector（Rust 快抽） | Firecrawl 出品 Rust 库：先分类（`text_based` / `scanned` / `image_based` / `mixed`），有原生文本的页 ~150 ms 抽标题/列表/表格/代码块/加粗/超链接/自动阅读顺序的 Markdown；扫描页识别出来后**不自动 OCR**，请换 PaddleX 产线 | **无**（纯 Rust wheel ~6.5 MB） | **~150 ms/页** | 原生文本 PDF（合同、手册、论文正文）秒级快抽；扫描件无效；**只能吃完整 PDF**（图片任务不会路由到这里） |
+| 2 | `PDFINSPECTOR`（可选） | PDF Inspector（Rust 快抽） | Firecrawl 出品 Rust 库：先分类（`text_based` / `scanned` / `image_based` / `mixed`），有原生文本的页 ~150 ms 抽标题/列表/表格/代码块/加粗/超链接/自动阅读顺序的 Markdown；扫描页识别出来后**不自动 OCR**，请换 PaddleX 产线 | **无**（纯 Rust wheel ~6.5 MB） | **~150 ms/页** | 原生文本 PDF（合同、手册、论文正文）秒级快抽；扫描件无效；**只能吃完整 PDF**（图片任务不会路由到这里） |
+| 3 | `PP-StructureV3`（默认） | 通用版面解析 v3（精简） | 版面检测 + OCR + 表格结构 + 公式 | ~1.9 GB | 30~120 s | 常规公文、报价单、发票 |
+| 4 | `PP-StructureV3-full` | 通用版面解析 v3（完整） | 上述 + **区域检测** + **印章识别** + 文档方向/矫正 | ~2.0 GB | 40~180 s | 复杂版面、多栏、带红章/公式的正式文件 |
+| 5 | `table_recognition_v2` | 通用表格识别 | **专用表格产线**：表格分类 + 结构识别（有线 `SLANeXt_wired` / 无线 `SLANeXt_wireless`）+ 单元格检测（RT-DETR）+ 按单元格重新 OCR | 与精简版共用，另加 ~30 MB | 40~150 s | **只要表格**（报表、对账单、票据明细），跳过正文解析，表格还原度最高 |
 | 6 | `INDRA`（可选） | Indra OCR | Datalab 1M 参数 ONNX 模型：80+ 语言、手写体、任意角度页面；输出阅读顺序版面块与 HTML 表格 | ~76 MB | CPU 约 0.2~1 s | 轻量 CPU 场景、手写件、多语种；**不做单元格级表格还原** |
 
-> **PDF Inspector（可选产线）**：默认不安装，安装后自动注册到下拉框（排在 PaddleX 产线之后、Indra 之前）。
+> **PDF Inspector（可选产线）**：默认不安装，安装后自动注册到下拉框（排在 `OCR` 之后、`PP-StructureV3` 之前）。
 > ```bash
 > pip install -r requirements-pdf-inspector.txt   # 或 pip install pdf-inspector
 > ```
@@ -971,21 +971,30 @@ docker stats --no-stream paddlex-ocr-web
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/tasks` | multipart：`files`（可多个）+ `params`（JSON 字符串）+ `pipeline`（产线 id，可空）；返回 `batch_id` 与任务列表 |
+| `POST` | `/api/tasks` | multipart：`files`（可多个）+ `params`（JSON 字符串）+ `pipeline`（产线 id；留空 / `auto` = 智能选择）；返回 `batch_id` 与任务列表 |
 | `GET` | `/api/tasks?status=&limit=&keyword=` | 任务列表 + 队列统计 |
 | `GET` | `/api/tasks/{id}` | 单任务状态/进度/错误 |
 | `GET` | `/api/tasks/{id}/result` | 规范化识别结果（pages → blocks，含表格网格） |
 | `GET` | `/api/tasks/{id}/text` | 纯文本（一键复制用） |
 | `GET` | `/api/tasks/{id}/export?fmt=docx\|xlsx\|txt\|md` | 下载导出文件（`noise=1` 含页眉页脚） |
 | `POST` | `/api/tasks/{id}/cancel` | 取消（当前页结束后生效） |
+| `POST` | `/api/tasks/{id}/retry` | 重跑；可选 JSON `{"pipeline":"...","params":{...}}`，`pipeline` 留空 = 重新智能选择 |
+| `POST` | `/api/batches/{batch_id}/retry` | 批量重跑本会话该 batch 的终态任务（跳过排队/运行中）；body 同上 |
 | `DELETE` | `/api/tasks/{id}` | 删除任务与结果 |
 | `GET` | `/api/meta` | 前端配置：限额、默认参数、支持格式、**可用产线列表**、会话标识 |
 | `GET` | `/api/health` | 健康检查（`200` 正常 / `503` 降级，含 `issues`） |
 | `POST` | `/api/admin/login` | 后台登录（表单 JSON），成功后 Set-Cookie |
+| `POST` | `/api/admin/logout` | 退出登录（清除 Cookie） |
+| `GET` | `/api/admin/session` | 校验管理员会话是否有效 |
 | `GET` | `/api/admin/overview` | 服务状态、模型清单、统计、系统信息 |
 | `GET` | `/api/admin/tasks` | 全量任务（含错误详情） |
+| `POST` | `/api/admin/tasks/{id}/cancel` | 取消任意任务 |
+| `POST` | `/api/admin/tasks/{id}/retry` | 重跑任务；可选 body `{"pipeline":"...","params":{...}}` |
+| `POST` | `/api/admin/batches/{batch_id}/retry` | 批量重跑该 batch 的所有终态任务（不按会话过滤） |
+| `DELETE` | `/api/admin/tasks/{id}` | 删除任务与结果 |
 | `GET` | `/api/admin/tasks/{id}/log` | 单任务日志 |
 | `GET` | `/api/admin/logs?file=app.log&lines=500` | 服务日志 |
+| `GET` | `/api/admin/config` | 读取当前配置（不含口令/密钥） |
 | `PATCH` | `/api/admin/config` | 在线改白名单配置 |
 | `POST` | `/api/admin/service/{pause\|resume\|warmup\|reload\|unload}?pipeline=<id>` | 服务控制；`warmup/reload/unload` 可指定产线（留空为默认产线），`unload` 用于释放某条产线的内存 |
 | `POST` | `/api/admin/maintenance/cleanup` | 立即清理过期任务 |

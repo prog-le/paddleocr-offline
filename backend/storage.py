@@ -126,6 +126,10 @@ class Storage:
         if d.resolve().parent != self.root.resolve():
             return False
         shutil.rmtree(d, ignore_errors=True)
+        # 导出缓存单独存放在 data/exports/<task_id>，一并清理
+        export_dir = self.exports / task_id
+        if export_dir.resolve().parent == self.exports.resolve():
+            shutil.rmtree(export_dir, ignore_errors=True)
         return True
 
     # ---------------------------------------------------------------- cleanup
@@ -146,6 +150,9 @@ class Storage:
                 continue
             if ts < cutoff:
                 shutil.rmtree(child, ignore_errors=True)
+                export_dir = self.exports / child.name
+                if export_dir.resolve().parent == self.exports.resolve():
+                    shutil.rmtree(export_dir, ignore_errors=True)
                 removed.append(child.name)
         return removed
 

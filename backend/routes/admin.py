@@ -26,6 +26,7 @@ from .. import memguard
 from ..manager import TaskError
 from ..security import COOKIE_NAME, AuthError
 from ..settings import PROJECT_ROOT, RUNTIME_EDITABLE
+from .public import _parse_retry_body, _sanitize_params, _validate_pipeline
 
 router = APIRouter(prefix="/api/admin")
 
@@ -159,7 +160,7 @@ async def overview(request: Request) -> Dict[str, Any]:
 @router.get("/tasks")
 async def admin_tasks(
     request: Request,
-    status: str = Query("all"),
+    status: str = Query("all", pattern="^(all|active|pending|running|success|failed|cancelled)$"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     keyword: str = Query(""),
@@ -197,17 +198,15 @@ async def admin_retry(request: Request, task_id: str) -> Dict[str, Any]:
     - params 更新识别参数（只覆盖传入的字段）
     """
     require_admin(request)
-    pipeline = None
-    params = None
-    try:
-        body = await request.json()
-        if isinstance(body, dict):
-            if "pipeline" in body:
-                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
-            if "params" in body and isinstance(body["params"], dict):
-                params = body["params"]
-    except Exception:
-        body = None  # noqa: F841
+    specs = request.app.state.pipeline_specs
+    body = await _parse_retry_body(request)
+    pipeline = body.get("pipeline") if "pipeline" in body else None
+    if pipeline is not None:
+        pipeline = str(pipeline or "")
+        _validate_pipeline(specs, pipeline)
+    params = body.get("params") if isinstance(body.get("params"), dict) else None
+    if params is not None:
+        params = _sanitize_params(params, specs=specs)
     try:
         return request.app.state.manager.retry(task_id, pipeline=pipeline, params=params)
     except TaskError as exc:
@@ -218,17 +217,15 @@ async def admin_retry(request: Request, task_id: str) -> Dict[str, Any]:
 async def admin_retry_batch(request: Request, batch_id: str) -> Dict[str, Any]:
     """批量重跑同一 batch 下的所有终态任务（管理员有权绕过 owner 过滤）。"""
     require_admin(request)
-    pipeline = None
-    params = None
-    try:
-        body = await request.json()
-        if isinstance(body, dict):
-            if "pipeline" in body:
-                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
-            if "params" in body and isinstance(body["params"], dict):
-                params = body["params"]
-    except Exception:
-        body = None  # noqa: F841
+    specs = request.app.state.pipeline_specs
+    body = await _parse_retry_body(request)
+    pipeline = body.get("pipeline") if "pipeline" in body else None
+    if pipeline is not None:
+        pipeline = str(pipeline or "")
+        _validate_pipeline(specs, pipeline)
+    params = body.get("params") if isinstance(body.get("params"), dict) else None
+    if params is not None:
+        params = _sanitize_params(params, specs=specs)
     try:
         return request.app.state.manager.retry_batch(batch_id, owner=None, pipeline=pipeline, params=params)
     except TaskError as exc:

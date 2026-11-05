@@ -249,19 +249,21 @@ d=json.load(open('$TMP/meta3.json'))
 ids=[p['id'] for p in d['pipelines']]
 kinds={p['id']: p['kind'] for p in d['pipelines']}
 expect=['OCR','PP-StructureV3','PP-StructureV3-full','table_recognition_v2']
-# INDRA 是可选产线：装了 indra-ocr 才会追加在末尾
-paddle=[i for i in ids if i!='INDRA']
+# PDFINSPECTOR / INDRA 是可选产线：装了对应 wheel 才会注册
+paddle=[i for i in ids if i not in ('PDFINSPECTOR','INDRA')]
 assert paddle==expect, ('产线顺序/条目不符合预期', ids, expect)
 assert kinds['OCR']=='ocr', kinds
 assert kinds['table_recognition_v2']=='table', kinds
 assert kinds['PP-StructureV3']=='structure', kinds
+if 'PDFINSPECTOR' in ids:
+    assert kinds['PDFINSPECTOR']=='pdf_inspector', (ids, kinds)
 if 'INDRA' in ids:
     assert ids[-1]=='INDRA' and kinds['INDRA']=='indra', (ids, kinds)
 assert d['pipeline'] in ids, (d['pipeline'], ids)
 print('  产线顺序:', ids)
 print('  类型:', kinds)
 print('  默认产线:', d['pipeline'])
-" && pass "产线列表为 纯文字→精简→完整→通用表格识别（可选追加上 Indra）" || bad "产线列表/顺序异常"
+" && pass "产线列表为 纯文字→（可选 PDF Inspector）→精简→完整→通用表格识别（可选追加 Indra）" || bad "产线列表/顺序异常"
 
 # 指定 OCR 产线提交
 curl -sS -b "$CJAR" -c "$CJAR" -X POST "$BASE/api/tasks" \

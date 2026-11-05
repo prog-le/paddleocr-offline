@@ -180,8 +180,8 @@ def select_pipeline(
             rationale=(
                 f"classify_pdf → mixed（置信度 {confidence:.0%}），"
                 f"{ocr_pages_n}/{page_count} 页需 OCR（占比 {ocr_ratio:.0%}）；"
-                f"PDFINSPECTOR 快抽原生文本页，"
-                f"扫描页会保留原样供后续 OCR——若要全量处理扫描页请手动选 PaddleX 产线。"
+                f"PDFINSPECTOR 只抽取原生文本，扫描页不会 OCR——"
+                f"若要处理扫描页请手动选 PaddleX 产线或单文件重跑。"
             ),
             pipeline_label=getattr(pdfinspector_spec, "label", pdfinspector_spec.id),
         )

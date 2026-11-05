@@ -20,9 +20,10 @@ from ..converters import FORMATS, ExportError, export_document
 from ..docmodel import Doc
 from .. import devices as device_mod
 from .. import memguard
-from ..engine import OCR_PARAMS, STRUCTURE_PARAMS
+from ..engine import STRUCTURE_PARAMS
 from ..manager import TaskError
-from ..pipelines import PipelineSpec, find_spec, resolve_default_id
+from ..pipelines import PipelineSpec, find_spec
+from ..smart_router import AUTO_TOKENS
 from ..storage import safe_filename
 
 router = APIRouter()
@@ -60,8 +61,22 @@ def _public_task(meta: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _sanitize_params(raw: Dict[str, Any], spec: PipelineSpec) -> Dict[str, Any]:
-    allowed = set(spec.params) if spec is not None else STRUCTURE_PARAMS
+def _sanitize_params(
+    raw: Dict[str, Any],
+    spec: Optional[PipelineSpec] = None,
+    specs: Optional[List[PipelineSpec]] = None,
+) -> Dict[str, Any]:
+    """只保留指定产线支持的参数，并夹紧阈值范围。
+
+    智能路由（spec 未知）时按所有可用产线的参数并集白名单过滤，
+    避免未经校验的参数直达引擎。
+    """
+    if spec is not None:
+        allowed = set(spec.params)
+    elif specs:
+        allowed = set().union(*(set(sp.params) for sp in specs))
+    else:
+        allowed = set(STRUCTURE_PARAMS)
     clean: Dict[str, Any] = {}
     for key, value in (raw or {}).items():
         if key not in allowed:
@@ -78,6 +93,26 @@ def _sanitize_params(raw: Dict[str, Any], spec: PipelineSpec) -> Dict[str, Any]:
             if value in ("min", "max", "large", "small", "union"):
                 clean[key] = value
     return clean
+
+
+def _validate_pipeline(specs: List[PipelineSpec], pipeline: Optional[str]) -> None:
+    """自动路由 token 放行；显式产线 id 必须存在，否则 400。"""
+    if pipeline is None or not pipeline or pipeline in AUTO_TOKENS:
+        return
+    if find_spec(specs, pipeline) is None:
+        available = "、".join(f"{sp.id}（{sp.label}）" for sp in specs)
+        raise HTTPException(
+            status_code=400, detail=f"未知产线：{pipeline}。可选：{available}"
+        )
+
+
+async def _parse_retry_body(request: Request) -> Dict[str, Any]:
+    """读取重试接口的可选 JSON body（空 body / 非法 body 视为无覆盖）。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - 无 body / 非 JSON
+        return {}
+    return body if isinstance(body, dict) else {}
 
 
 async def _save_upload(upload: UploadFile, dest: Path, limit: int) -> int:
@@ -110,7 +145,7 @@ async def create_tasks(
     request: Request,
     files: List[UploadFile] = File(..., description="待识别文件，支持多选"),
     params: str = Form("{}", description="识别参数 JSON"),
-    pipeline: str = Form("", description="产线 id（留空用默认产线）"),
+    pipeline: str = Form("", description="产线 id；留空 / auto = 智能选择"),
 ) -> JSONResponse:
     settings = request.app.state.settings
     manager = request.app.state.manager
@@ -131,32 +166,24 @@ async def create_tasks(
         raise HTTPException(status_code=400, detail="params 必须是合法 JSON") from None
 
     # 产线选择：
-    #   - 空字符串 / auto-tokens → 触发 smart_router（manager.run 里按文件类型逐个智能选）
+    #   - 空字符串 / auto-tokens → spec=None，manager.run 里对每个文件独立智能路由
     #   - 有效 id → 强制该产线（所有上传文件共用同一条）
     #   - 无效 id → 报错列出可选项
-    from backend.smart_router import AUTO_TOKENS
-
     pipeline_chosen_by_user = bool(pipeline) and pipeline not in AUTO_TOKENS
+    spec: Optional[PipelineSpec] = None
     if pipeline_chosen_by_user:
         spec = find_spec(specs, pipeline)
         if spec is None:
             available = "、".join(f"{sp.id}（{sp.label}）" for sp in specs)
             raise HTTPException(status_code=400, detail=f"未知产线：{pipeline}。可选：{available}")
-    else:
-        # 智能路由：pipeline 字段传空字符串，manager.run 里会对每个文件独立探测并选产线
-        spec = None
-    if spec is None and not pipeline_chosen_by_user:
-        # 后端配置里关闭了 auto_pipeline → 回落到默认产线
-        if not settings.get("ocr.auto_pipeline", True):
-            spec = find_spec(specs, manager.default_pipeline) or (specs[0] if specs else None)
-    if spec is None and not pipeline_chosen_by_user:
-        # smart_router 里没有任何可用产线时回退到默认
+    elif not settings.get("ocr.auto_pipeline", True):
+        # 后端关闭了智能选择 → 固定用默认产线
         spec = find_spec(specs, manager.default_pipeline) or (specs[0] if specs else None)
-    if spec is None and pipeline_chosen_by_user:
+    if spec is None and not pipeline_chosen_by_user and not specs:
         raise HTTPException(status_code=503, detail="服务未配置任何可用产线")
 
-    # 智能路由模式：params 用默认值（smart_router 会按选中产线自动选对应参数）
-    clean_params = _sanitize_params(raw_params, spec) if spec else (raw_params or {})
+    # 智能路由模式下按全部产线的参数并集过滤，避免未校验参数直达引擎
+    clean_params = _sanitize_params(raw_params, spec=spec, specs=specs if spec is None else None)
     limit = settings.max_upload_bytes
     staging = settings.data_dir / "uploads"
     staging.mkdir(parents=True, exist_ok=True)
@@ -185,6 +212,14 @@ async def create_tasks(
             staged.unlink(missing_ok=True)
             errors.append({"filename": original, "error": "文件内容无法识别（不是有效的图片或 PDF）", "code": 400})
             continue
+        if spec is not None and spec.kind == "pdf_inspector" and kind != "pdf":
+            staged.unlink(missing_ok=True)
+            errors.append({
+                "filename": original,
+                "error": "PDFINSPECTOR 产线只支持 PDF 文件；图片请选择 PaddleX 产线或「智能选择」",
+                "code": 400,
+            })
+            continue
         try:
             meta = manager.submit(
                 input_path=staged,
@@ -194,8 +229,9 @@ async def create_tasks(
                 batch_id=batch_id,
                 source_type=kind,
                 owner=_sid(request),
-                pipeline=spec.id,
-                pipeline_label=spec.label,
+                # pipeline=None → smart_router 按文件类型自动选择
+                pipeline=spec.id if spec else None,
+                pipeline_label=spec.label if spec else "⚡ 智能选择",
             )
             created.append(_public_task(meta))
         except TaskError as exc:
@@ -221,7 +257,7 @@ async def create_tasks(
 @router.get("/api/tasks")
 async def list_tasks(
     request: Request,
-    status: str = Query("all"),
+    status: str = Query("all", pattern="^(all|active|pending|running|success|failed|cancelled)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     keyword: Optional[str] = Query(None),
@@ -268,7 +304,10 @@ async def get_plain_text(request: Request, task_id: str) -> PlainTextResponse:
         raise HTTPException(status_code=404, detail="任务不存在或不属于当前会话")
     result = manager.result(task_id)
     if not result:
-        raise HTTPException(status_code=404, detail="结果不存在")
+        status = (manager.get(task_id) or {}).get("status")
+        if status != "success":
+            raise HTTPException(status_code=409, detail=f"任务尚未完成（当前状态：{status}）")
+        raise HTTPException(status_code=410, detail="结果文件已被清理，请重新识别")
     from ..converters.to_txt import build_txt
 
     doc = Doc.from_dict(result)
@@ -302,19 +341,27 @@ async def export(
     out_dir = settings.exports_dir / task_id
     out_path = out_dir / f"{safe_filename(base, 'result')}{ext}"
 
-    # 同一参数的导出结果直接复用（避免重复转换大文档）
-    stamp_key = out_dir / f".{fmt}.{int(noise)}.stamp"
-    if not out_path.exists() or not stamp_key.exists():
+    # 导出缓存：同一份结果 + 同一组导出选项才复用（避免把 noise=1 的文件当成 noise=0 返回）
+    include_noise = bool(noise) or bool(settings.get("export.include_noise_blocks", False))
+    txt_page_markers = bool(settings.get("export.txt_page_markers", True))
+    docx_page_break = bool(settings.get("export.docx_page_break", True))
+    cache_key = f"{fmt}|{int(noise)}|{int(include_noise)}|{int(txt_page_markers)}|{int(docx_page_break)}"
+    stamp_key = out_dir / ".stamp"
+    try:
+        cached_key = stamp_key.read_text(encoding="utf-8").strip() if stamp_key.exists() else ""
+    except OSError:
+        cached_key = ""
+    if not out_path.exists() or cached_key != cache_key:
         try:
             export_document(
                 doc,
                 fmt,
                 out_path,
-                include_noise=bool(noise) or bool(settings.get("export.include_noise_blocks", False)),
-                txt_page_markers=bool(settings.get("export.txt_page_markers", True)),
-                docx_page_break=bool(settings.get("export.docx_page_break", True)),
+                include_noise=include_noise,
+                txt_page_markers=txt_page_markers,
+                docx_page_break=docx_page_break,
             )
-            stamp_key.write_text(str(time.time()), encoding="utf-8")
+            stamp_key.write_text(cache_key, encoding="utf-8")
         except ExportError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
@@ -356,17 +403,19 @@ async def retry_task(request: Request, task_id: str) -> Dict[str, Any]:
     manager = request.app.state.manager
     if not manager.get_owned(task_id, _sid(request)):
         raise HTTPException(status_code=404, detail="任务不存在或不属于当前会话")
-    pipeline = None
-    params = None
-    try:
-        body = await request.json()
-        if isinstance(body, dict):
-            if "pipeline" in body:
-                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
-            if "params" in body and isinstance(body["params"], dict):
-                params = body["params"]
-    except Exception:
-        body = None  # noqa: F841
+    body = await _parse_retry_body(request)
+    pipeline = body.get("pipeline") if "pipeline" in body else None
+    if pipeline is not None:
+        pipeline = str(pipeline or "")
+        _validate_pipeline(request.app.state.pipeline_specs, pipeline)
+    params = body.get("params") if isinstance(body.get("params"), dict) else None
+    if params is not None:
+        target = find_spec(request.app.state.pipeline_specs, pipeline) if pipeline else None
+        params = _sanitize_params(
+            params,
+            spec=target,
+            specs=request.app.state.pipeline_specs if target is None else None,
+        )
     try:
         meta = manager.retry(task_id, pipeline=pipeline, params=params)
     except TaskError as exc:
@@ -382,17 +431,16 @@ async def retry_batch(request: Request, batch_id: str) -> Dict[str, Any]:
     {"pipeline": "", "params": {...}}  → 全批统一换产线 / 改参数
     """
     manager = request.app.state.manager
-    pipeline = None
-    params = None
-    try:
-        body = await request.json()
-        if isinstance(body, dict):
-            if "pipeline" in body:
-                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
-            if "params" in body and isinstance(body["params"], dict):
-                params = body["params"]
-    except Exception:
-        body = None  # noqa: F841
+    specs = request.app.state.pipeline_specs
+    body = await _parse_retry_body(request)
+    pipeline = body.get("pipeline") if "pipeline" in body else None
+    if pipeline is not None:
+        pipeline = str(pipeline or "")
+        _validate_pipeline(specs, pipeline)
+    params = body.get("params") if isinstance(body.get("params"), dict) else None
+    if params is not None:
+        target = find_spec(specs, pipeline) if pipeline else None
+        params = _sanitize_params(params, spec=target, specs=specs if target is None else None)
     try:
         result = manager.retry_batch(batch_id, owner=_sid(request), pipeline=pipeline, params=params)
     except TaskError as exc:

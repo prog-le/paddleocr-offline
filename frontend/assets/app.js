@@ -819,7 +819,8 @@
       const pid = overlay.querySelector('#batch-pipeline').value;
       const pRaw = overlay.querySelector('#batch-params').value.trim();
       const body = {};
-      if (pid) body.pipeline = pid;  // 智能选择时不传 pipeline（让后端不覆盖）
+      // 始终传 pipeline：空字符串 = 每个文件重新智能路由，具体 id = 全批强制该产线
+      body.pipeline = pid;
       if (pRaw) {
         try { body.params = JSON.parse(pRaw); }
         catch { toast('参数 JSON 格式错误', 'err'); return; }
