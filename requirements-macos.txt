@@ -7,7 +7,10 @@
 #   因此在 Mac 上直接 pip install -r requirements.txt 会报：
 #       ERROR: Could not find a version that satisfies the requirement paddlepaddle==3.4.0
 #
-#   macOS(Apple Silicon / Intel) 可用的最高版本是 3.3.1，与 paddlex 3.7.2 兼容，
+#   macOS 可用的最高版本是 3.3.1，与 paddlex 3.7.2 兼容，
+#   且 PyPI 只提供 Apple Silicon (arm64) 轮子（macosx_11_0_arm64）。
+#   Intel Mac 没有可用轮子，请改用 Docker 或 Linux x86_64 部署。
+#
 #   用本文件即可在本机跑通「上传→识别→预览→导出」，用于功能验证与界面调试。
 #
 # 用法：

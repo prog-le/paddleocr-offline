@@ -125,6 +125,27 @@ python3 scripts/download_models.py --config config/pipelines/PP-StructureV3.yaml
 > `PP-OCRv4`），好处是同一张图在不同产线下文字结果一致、且少占 ~400 MB 磁盘。
 > 需要严格对齐官方默认时，把 yaml 里这两个 `model_name` 改回去再下载即可。
 
+## Indra OCR（可选产线）需要的模型
+
+Indra OCR 的权重不在 PaddleX 缓存里，默认由 `indra-ocr` 自己下载（约 76 MB）：
+
+```bash
+# 有外网机器，先安装可选依赖
+pip install -r requirements-indra.txt
+# 下载到 models/indra（可用 INDRA_OCR_MODEL_DIR 覆盖输出目录）
+python3 scripts/download_indra_models.py
+```
+
+下载完成后把 `models/indra` 一起拷到离线服务器，并在 `config/config.yaml` 设置：
+
+```yaml
+indra:
+  model_dir: models/indra
+```
+
+> 未安装 `indra-ocr` 时该产线不会注册，`models/indra` 为空也不影响 PaddleX 产线。
+> 模型权重遵循 OpenRAIL-M，商用前请确认许可。
+
 ## GPU 与模型的关系
 
 模型权重与设备**无关**：CPU / NVIDIA GPU 共用同一份 `official_models/`。

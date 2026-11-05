@@ -56,6 +56,11 @@ class EnginePool:
 
                 self._mock_cls = MockEngine
             return self._mock_cls(self.settings, spec)
+        if getattr(spec, "backend", "paddlex") == "indra":
+            from .indra_engine import IndraEngine
+
+            self.log.info("使用 Indra OCR 后端：%s", spec.id)
+            return IndraEngine(self.settings, spec)
         if self._real_cls is None:
             from .engine import PaddleXEngine
 

@@ -51,6 +51,7 @@ ocr:
   #   2. PP-StructureV3       通用版面解析v3（精简）：版面 + OCR + 表格（默认）
   #   3. PP-StructureV3-full  通用版面解析v3（完整）：+ 区域检测/公式/印章
   #   4. table_recognition_v2 通用表格识别：专用表格产线，只出表格、还原度最高
+  #   5. INDRA                Indra OCR：1M 参数轻量 CPU 模型，需 pip install indra-ocr
   pipeline: PP-StructureV3
   # 可用产线白名单；留空表示自动扫描 config/pipelines/*.yaml 并加上 OCR
   # 例：available_pipelines: [PP-StructureV3, OCR]
@@ -125,6 +126,27 @@ export:
   txt_page_markers: true
   # DOCX 页与页之间插入分页符
   docx_page_break: true
+
+# =============================================================================
+# 可选产线：Indra OCR（github.com/datalab-to/indra）
+# -----------------------------------------------------------------------------
+# 需先安装可选依赖：pip install -r requirements-indra.txt
+# 未安装时该产线不会出现在下拉框，PaddleX 产线完全不受影响。
+# 注意：模型权重遵循 OpenRAIL-M，商业使用前请自行确认许可。
+# =============================================================================
+indra:
+  enabled: true
+  # 模型目录；留空 = 使用 indra-ocr 自带缓存。
+  # 本项目运行期强制离线（HF_HUB_OFFLINE=1），请先在有网机器执行：
+  #   INDRA_OCR_MODEL_DIR=models/indra python3 scripts/download_indra_models.py
+  # 再把 models/indra 随项目一起拷贝，并把下面改成 models/indra
+  model_dir: ""
+  # ONNX Runtime 线程数，0 = 使用 indra-ocr 默认值（4）
+  threads: 0
+  # 默认关闭：公式转 LaTeX（会显著变慢）
+  math: false
+  # 默认关闭：保留页眉/页脚/页码块（开启后导出内容更杂）
+  keep_furniture: false
 
 logging:
   level: INFO

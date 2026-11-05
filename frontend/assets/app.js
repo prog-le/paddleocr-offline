@@ -146,7 +146,11 @@
         + '换浏览器、清 Cookie 或换设备后看不到这些任务，管理员后台仍可查看。';
     }
 
-    state.defaults = Object.assign({}, (meta.ocr && meta.ocr.defaults) || {});
+    state.defaults = Object.assign(
+      {},
+      (meta.ocr && meta.ocr.defaults) || {},
+      (meta.indra && meta.indra.defaults) || {},
+    );
     applyParams(state.defaults);
     initPipelines(meta);
   }
@@ -156,6 +160,7 @@
     'use_table_recognition', 'use_formula_recognition', 'use_seal_recognition',
     'use_doc_orientation_classify', 'use_doc_unwarping', 'use_textline_orientation',
     'text_det_box_thresh', 'text_det_thresh', 'text_rec_score_thresh', 'layout_threshold',
+    'text_det_limit_side_len', 'math', 'keep_furniture',
   ];
 
   function initPipelines(meta) {
@@ -207,6 +212,25 @@
       use_textline_orientation: '通用表格识别产线不支持文本行方向分类',
     },
     structure: {},
+    indra: {
+      use_table_recognition: 'Indra OCR 按版面块输出表格，不做单元格结构还原',
+      use_formula_recognition: '请使用「公式转 LaTeX」开关（Indra 自带公式识别）',
+      use_seal_recognition: 'Indra OCR 不含印章识别模型',
+      use_doc_orientation_classify: 'Indra OCR 自动处理页面旋转/倾斜，无需单独开关',
+      use_doc_unwarping: 'Indra OCR 不支持弯曲矫正',
+      use_textline_orientation: 'Indra OCR 按整页版面识别，无文本行方向开关',
+      text_det_box_thresh: 'Indra OCR 不暴露文本检测框阈值',
+      text_det_thresh: 'Indra OCR 不暴露文本检测像素阈值',
+      text_rec_score_thresh: 'Indra OCR 不暴露识别分数阈值',
+      layout_threshold: 'Indra OCR 使用模型自带版面判定，无该阈值',
+      text_det_limit_side_len: 'Indra OCR 自动缩放，无该限制',
+    },
+  };
+
+  // 仅 Indra OCR 支持的参数：其它产线一律禁用并提示
+  const INDRA_ONLY_PARAMS = {
+    math: '仅 Indra OCR 支持（公式转 LaTeX）',
+    keep_furniture: '仅 Indra OCR 支持（保留页眉页脚）',
   };
 
   function applyPipelineUI() {
@@ -214,7 +238,8 @@
     const desc = $('#pipeline-desc');
     if (desc) desc.textContent = p.description || p.label;
 
-    const unsupported = PARAM_UNSUPPORTED[p.kind] || {};
+    const extra = p.kind === 'indra' ? {} : INDRA_ONLY_PARAMS;
+    const unsupported = Object.assign({}, extra, PARAM_UNSUPPORTED[p.kind] || {});
     ALL_PARAM_KEYS.forEach((key) => {
       const el = $(`input[data-param="${key}"]`);
       if (!el) return;

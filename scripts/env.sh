@@ -24,6 +24,141 @@ detect_arch() {
   esac
 }
 
+# ------------------------------------------------------------------ 系统识别
+detect_os() {
+  case "$(uname -s)" in
+    Linux)                echo "linux" ;;
+    Darwin)               echo "macos" ;;
+    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+    *)                    echo "unknown" ;;
+  esac
+}
+
+# ------------------------------------------------------------------ 部署目标矩阵
+# 目标 id 约定：<os>-<arch>；Linux GPU 额外带 -gpu 后缀。
+# 支持的组合（其余组合在 Paddle/PaddleX 上游就没有可用轮子，脚本会明确拒绝）：
+#   linux-amd64 / linux-arm64       Paddle 3.4.0 CPU（Paddle 官方源）
+#   linux-amd64-gpu                 Paddle 3.4.0 GPU（仅 linux x86_64）
+#   macos-arm64                     Paddle 3.3.1 CPU（PyPI；Apple Silicon）
+#   windows-amd64                   Paddle 3.3.1 CPU（PyPI）
+SUPPORTED_TARGETS=(
+  linux-amd64 linux-arm64 linux-amd64-gpu
+  macos-arm64 windows-amd64
+)
+CPU_TARGETS=(linux-amd64 linux-arm64 macos-arm64 windows-amd64)
+
+# 当前构建/运行机器对应的目标 id（不支持的系统返回 unknown）
+target_id() {
+  local os arch
+  os="$(detect_os)"
+  arch="$(detect_arch)"
+  case "$arch" in amd64|arm64) ;; *) echo "unknown"; return 0 ;; esac
+  case "$os" in
+    linux)   echo "linux-${arch}" ;;
+    macos)   echo "macos-${arch}" ;;
+    windows) echo "windows-${arch}" ;;
+    *)       echo "unknown" ;;
+  esac
+}
+
+target_os() {
+  case "$1" in
+    linux-*)   echo "linux" ;;
+    macos-*)   echo "macos" ;;
+    windows-*) echo "windows" ;;
+    *)         echo "unknown" ;;
+  esac
+}
+
+target_arch_id() {
+  case "$1" in
+    linux-amd64-gpu) echo "amd64" ;;
+    linux-arm64-gpu) echo "arm64" ;;
+    *-amd64)         echo "amd64" ;;
+    *-arm64)         echo "arm64" ;;
+    *)               echo "unknown" ;;
+  esac
+}
+
+target_device() {
+  case "$1" in
+    *-gpu) echo "gpu" ;;
+    *)     echo "cpu" ;;
+  esac
+}
+
+target_supported() {
+  local t
+  for t in "${SUPPORTED_TARGETS[@]}"; do
+    [ "$t" = "$1" ] && return 0
+  done
+  return 1
+}
+
+target_support_note() {
+  case "$1" in
+    macos-amd64)
+      echo "macOS Intel 没有 paddlepaddle 轮子（PyPI 只发布 macosx_11_0_arm64）；请改用 macos-arm64 或 Docker" ;;
+    windows-arm64)
+      echo "Windows ARM64 没有 paddlepaddle 轮子；请改用 windows-amd64" ;;
+    linux-arm64-gpu|linux-arm64-gpu-*)
+      echo "Paddle 官方 GPU 轮子只有 linux x86_64；ARM + NVIDIA 请用 NGC 镜像" ;;
+    macos-arm64-gpu|windows-amd64-gpu)
+      echo "Paddle 没有 macOS/Windows GPU 轮子；GPU 仅支持 linux-amd64" ;;
+    *)
+      echo "未知目标：$1（可选：${SUPPORTED_TARGETS[*]}）" ;;
+  esac
+}
+
+target_requirements() {
+  case "$(target_os "$1")" in
+    linux)   echo "requirements.txt" ;;
+    macos)   echo "requirements-macos.txt" ;;
+    windows) echo "requirements-windows.txt" ;;
+    *)       return 1 ;;
+  esac
+}
+
+# wheel / 运行时目录：Linux 沿用已有的 offline/wheels/<arch> 布局，
+# macOS / Windows 使用 offline/<kind>/<target>，避免不同平台混装。
+target_wheels_dir() {
+  case "$1" in
+    linux-amd64)     echo "$PROJECT_ROOT/offline/wheels/amd64" ;;
+    linux-arm64)     echo "$PROJECT_ROOT/offline/wheels/arm64" ;;
+    linux-amd64-gpu) echo "$PROJECT_ROOT/offline/wheels-gpu/amd64" ;;
+    *)               echo "$PROJECT_ROOT/offline/wheels/$1" ;;
+  esac
+}
+
+target_runtime_dir() {
+  case "$1" in
+    linux-amd64|linux-amd64-gpu) echo "$PROJECT_ROOT/offline/python/amd64" ;;
+    linux-arm64)                 echo "$PROJECT_ROOT/offline/python/arm64" ;;
+    *)                           echo "$PROJECT_ROOT/offline/python/$1" ;;
+  esac
+}
+
+target_runtime_triple() {
+  case "$1" in
+    linux-amd64|linux-amd64-gpu) echo "x86_64-unknown-linux-gnu" ;;
+    linux-arm64)   echo "aarch64-unknown-linux-gnu" ;;
+    macos-arm64)   echo "aarch64-apple-darwin" ;;
+    macos-amd64)   echo "x86_64-apple-darwin" ;;
+    windows-amd64) echo "x86_64-pc-windows-msvc" ;;
+    *)             return 1 ;;
+  esac
+}
+
+# GNU 风格架构名；$1 可传 amd64/arm64，缺省用当前架构
+wheel_arch() {
+  local a="${1:-$(detect_arch)}"
+  case "$a" in
+    amd64) echo "x86_64" ;;
+    arm64) echo "aarch64" ;;
+    *)     echo "unknown" ;;
+  esac
+}
+
 # Docker 平台名
 docker_platform() {
   case "$(detect_arch)" in
@@ -33,14 +168,6 @@ docker_platform() {
   esac
 }
 
-# wheel 平台标签（manylinux 用 aarch64 / x86_64，与容器名不同）
-wheel_arch() {
-  case "$(detect_arch)" in
-    amd64) echo "x86_64" ;;
-    arm64) echo "aarch64" ;;
-    *)     echo "unknown" ;;
-  esac
-}
 
 # ------------------------------------------------------------------ 输出
 _c_red=$'\033[31m'; _c_green=$'\033[32m'; _c_yellow=$'\033[33m'; _c_cyan=$'\033[36m'; _c_off=$'\033[0m'
@@ -96,10 +223,15 @@ runtime_python() {
   return 1
 }
 
-# 离线包里的运行时压缩包路径；$1=架构（默认当前架构）
+# 离线包里的运行时压缩包路径；$1=目标 id（兼容旧的 amd64/arm64 写法）
 runtime_tarball() {
-  local arch="${1:-$(detect_arch)}"
-  ls -1 "$PROJECT_ROOT/offline/python/$arch"/*.tar.gz 2>/dev/null | head -1
+  local key="${1:-$(target_id)}" d
+  case "$key" in
+    amd64) key="linux-amd64" ;;
+    arm64) key="linux-arm64" ;;
+  esac
+  d="$(target_runtime_dir "$key")"
+  ls -1 "$d"/*.tar.gz 2>/dev/null | head -1
 }
 
 # 解释器优先级：$VENV_PY -> .venv -> .venv_path 记录 -> 随包运行时 -> 系统 python3
