@@ -490,6 +490,21 @@ DEPLOY_ALL.txt                       # 各平台安装命令速查
 - Windows 解压运行时依赖系统自带 `tar.exe`（Win10 1803+ 自带），安装脚本会在缺失时明确报错；
 - 构建机只需要 `python3` + `curl` + `tar`；Windows 的 zip 与 macOS 的 tar.gz 都能在 Linux/macOS 构建机上交叉生成（`--skip-download` 复用已有物料）。
 
+产物目录 `dist/release-<version>/` 里多出来的两个辅助文件目标机这样用：
+
+```bash
+sha256sum -c SHA256SUMS              # Linux/macOS 校验包完整性
+certutil -hashfile <文件名> SHA256   # Windows 上用 certutil 手动比 release-manifest.json 里的 sha256
+
+# --models-separate 时，先放 models-paddlex_home-<ver>.tar.gz 到部署包根目录再解压：
+tar xzf paddlex-ocr-web-1.0.0-linux-amd64.tar.gz
+cd paddlex-ocr-web-1.0.0-linux-amd64
+tar xzf ../models-paddlex_home-1.0.0.tar.gz    # 会自动落到 models/paddlex_home/
+# Windows 对应：tar.exe -xzf ..\models-paddlex_home-1.0.0.tar.gz
+
+# DEPLOY_ALL.txt 是各平台安装命令速查（脚本自动生成，不需要手抄）
+```
+
 ### 6.1 联网机器：准备离线物料
 
 ```bash
@@ -580,10 +595,30 @@ cd paddlex-ocr-web-1.0.0-arm64
 .venv/bin/python scripts/smoke_test.py --all      # 四条产线逐条验证（慢，但最完整）
 ```
 
-> **macOS / Windows 目标机**：macOS（Apple Silicon）解压后执行同一条 `./scripts/install_offline.sh`
->（脚本会自动识别 `macos-arm64`，Paddle 为 3.3.1）；Windows 解压 zip 后执行
->`powershell -ExecutionPolicy Bypass -File scripts\install_windows.ps1`，再用
->`scripts\start_windows.ps1` / `scripts\stop_windows.ps1` 启停（详见包内 `DEPLOY_QUICKSTART.txt`）。
+> **macOS 目标机**（Apple Silicon，Paddle 3.3.1）：解压后执行同一条
+> `./scripts/install_offline.sh`（脚本会自动识别 `macos-arm64`）。启动/停止同 Linux：
+> `./scripts/start.sh --daemon` / `./scripts/stop.sh`。
+>
+> **Windows 目标机**（x64）：
+>
+> ```powershell
+> # 前置（二选一，脚本会自动检测缺失时提示）：
+> # 1. 安装 Microsoft Visual C++ 2015-2022 Redistributable (x64)
+> # 2. 确认 tar.exe 可用（Win10 1803+ 自带，或装 Git for Windows 自带）：tar --version
+>
+> # 完整解压 zip（不要直接在压缩包内运行脚本），再执行：
+> powershell -ExecutionPolicy Bypass -File scripts\install_windows.ps1
+>
+> # 启动（前台）
+> powershell -ExecutionPolicy Bypass -File scripts\start_windows.ps1
+> # 启动（后台，PID 写入 data\server.pid，日志写到 logs\server.log）
+> powershell -ExecutionPolicy Bypass -File scripts\start_windows.ps1 -Daemon
+> # 停止
+> powershell -ExecutionPolicy Bypass -File scripts\stop_windows.ps1
+> ```
+>
+> 端口取 `config\config.yaml` 的 `server.port`，需在防火墙放行。其余细节（模型解包、
+> 一键部署辅助文件用法）同 §6.0，包内还有 `DEPLOY_QUICKSTART.txt` 速查。
 
 安装完成后目录里会多出两样东西（都可安全删除后重装）：
 
@@ -1202,6 +1237,45 @@ OCR 的文本结果，不会出现空白页。
 **Q17：如何彻底清空历史？**
 停服后删除 `data/tasks/*`、`data/exports/*`；或后台点「清理过期任务」。
 
+**Q18：Indra OCR 怎么启用？和 PaddleX 产线什么区别？**
+Indra OCR 是可选轻量产线（1M 参数 ONNX 模型、80+ 语言、手写体、自动纠偏），默认不安装。
+安装：`pip install -r requirements-indra.txt` 或 `pip install indra-ocr==1.1.2`；
+下载模型：`python3 scripts/download_indra_models.py`（可选，留空则在线自动下载）。
+
+| 对比项 | PaddleX PP-StructureV3 | Indra OCR |
+| --- | --- | --- |
+| 定位 | 版面分析 + OCR + 表格识别 | 轻量 CPU 识别，手写/多语种/任意角度 |
+| 表格还原 | 单元格级合并、rowspan/colspan | 仅输出 HTML 表格块，**不做单元格级还原** |
+| 模型体积 | ~1.3 GB（精简版） | ~76 MB |
+| 速度 | 1~3 s/页（CPU） | 0.2~1 s/页（CPU） |
+| 产线 id | `PP-StructureV3` / `OCR` / `table_recognition_v2` | `INDRA` |
+
+未安装时前端下拉框里看不到 `INDRA` 选项，PaddleX 产线不受影响；装完重启服务后自动注册。
+参数（前端可临时覆盖）：`indra.math`（公式转 LaTeX）、`indra.keep_furniture`（保留页眉页脚）。
+
+**Q19：Windows 解压 zip 后运行脚本报 "tar.exe not found" / "Paddle wheel 缺失"？**
+两个最常见原因：
+1. **系统 `tar.exe` 缺失**：Win10 1803+ 自带，老版本需装 **Git for Windows**（带 tar），
+   或在 `C:\Windows\System32\tar.exe` 放一份；脚本用 `Get-Command tar` 检测。
+2. **Paddle wheel 架构不匹配**：包内 `offline/wheels/windows-amd64/` 里必须有
+   `paddlepaddle-*-win_amd64.whl`（3.3.1）。若拷了 macOS/Linux 包的 wheel 过来会直接报错。
+   确认命令：`Get-ChildItem offline\wheels\windows-amd64\ -Filter paddlepaddle*.whl`。
+
+此外**不要在 zip 内部直接双击运行 `.ps1`**：PowerShell 会把当前目录指向压缩包临时解压路径，
+`install_windows.ps1` 写 `.venv` 会失败。必须先完整解压到磁盘任意目录（如 `D:\paddlex-ocr-web\`）。
+
+**Q20：一键部署 `--all` 在任何构建机上都能成功吗？**
+能，脚本会**交叉下载**三系统的 wheel 与运行时：
+- macOS 运行时 + arm64 wheel / Windows 运行时 + win_amd64 wheel 都能在 **Linux 构建机** 上用 `pip --platform` 下载；
+- macOS 构建机同样能下载 Linux/Windows wheel（Paddle 官方 CPU 源与 PyPI 都支持交叉标签）；
+- 唯一不能反的是 **Windows 构建机**（git bash 可用，但 `curl --fail` / `tar -cf` 在某些配置下不稳定），建议在 Linux / macOS 上执行 `build_deploy_package.sh`。
+
+三种脚本都会先跑 `--skip-download` 的 dry-run 模式做物料检查：
+```bash
+./scripts/build_deploy_package.sh --all --dry-run --skip-download --skip-models
+```
+失败就停在「物料缺失」，不会产出坏包。
+
 ---
 
 ## 11. 安全与合规提示
@@ -1228,6 +1302,7 @@ OCR 的文本结果，不会出现空白页。
 
 | # | 检查项 | 命令 / 说明 |
 | --- | --- | --- |
+| 0 | **先用一键总入口确认矩阵** | `./scripts/build_deploy_package.sh --list-targets` 看清楚目标 id、依赖文件、Paddle 版本；`./scripts/build_deploy_package.sh --all --dry-run --skip-download --skip-models` 先过一遍物料检查 |
 | 1 | **wheel 架构正确** | `ls offline/wheels/arm64 \| head`，目标机 `uname -m` 必须对应（aarch64→arm64、x86_64→amd64） |
 | 2 | **wheel 的 Python 版本与目标机一致** | 文件名里的 `cp310`/`cp312` 必须匹配目标机 `python3 -V`。不一致会在安装时报 `Python 版本与 wheel 不匹配`（脚本已做拦截） |
 | 3 | **随包运行时齐全** | `./scripts/verify_runtime.sh` 全绿（sha256 / ELF 架构 / GLIBC ≤ 2.17）；`offline/python/<arch>/*.tar.gz` 存在（arm64 51 MB / amd64 65 MB） |
