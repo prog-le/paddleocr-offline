@@ -352,6 +352,9 @@ async def meta(request: Request) -> Dict[str, Any]:
     specs = request.app.state.pipeline_specs
     data["pipelines"] = [sp.to_dict() for sp in specs]
     data["pipeline"] = manager.default_pipeline
+    # 智能产线选择能力：后端 smart_router 里的 select_pipeline 会先探测文件类型 + PDF 分类再选产线
+    data["auto_pipeline"] = bool(settings.get("ocr.auto_pipeline", True))
+    data["auto_pipeline_label"] = "⚡ 智能选择（推荐）"
     data["mock"] = bool(getattr(request.app.state.engine, "is_mock", False))
     data["pdf_backend"] = _safe_pdf_backend()
     data["session"] = {"id": _sid(request)[:8], "isolated": True}

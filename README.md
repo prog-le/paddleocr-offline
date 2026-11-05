@@ -2,6 +2,7 @@
 
 > 上传 **图片 / PDF** → PaddleX 产线 **OCR + 表格识别** → 网页预览 → 导出 **Word / Excel / TXT / Markdown**
 > 可选接入 **pdf-inspector**（Rust 快抽）与 **Indra OCR**（轻量 CPU 模型）：pdf-inspector 对有原生文本的 PDF ~150 ms/页抽结构化 Markdown（标题 / 列表 / 表格 / 代码块 / 加粗），绕开昂贵 OCR；Indra OCR 提供 80+ 语言、手写体、自动纠偏。
+> **智能产线选择**：默认开启，上传后先探测文件类型 + PDF 轻量分类，自动选最合适的产线（原生文本 PDF → pdf-inspector 快抽；扫描件 → PaddleX / Indra）。
 > 支持 **x86_64 与 ARM64 (aarch64)**，支持 **本地原生部署** 与 **Docker 容器部署**，部署完成后 **运行期完全离线**。
 > CPU 即可运行，**可选 NVIDIA GPU (CUDA) 加速**；Apple Silicon 以原生 arm64 CPU 运行。
 

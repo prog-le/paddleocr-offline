@@ -164,23 +164,37 @@
   ];
 
   function initPipelines(meta) {
-    const list = (meta.pipelines || []).map((p) => ({
-      id: p.id,
-      label: p.label || p.id,
-      kind: p.kind || 'structure',
-      description: p.description || '',
-    }));
+    const list = [];
+    if (meta.auto_pipeline) {
+      list.push({
+        id: '',
+        label: meta.auto_pipeline_label || '⚡ 智能选择（推荐）',
+        kind: 'auto',
+        description: '上传后先探测文件类型 + （PDF）调用 pdf-inspector 轻量分类，自动选最合适的产线',
+      });
+    }
+    (meta.pipelines || []).forEach((p) => {
+      list.push({
+        id: p.id,
+        label: p.label || p.id,
+        kind: p.kind || 'structure',
+        description: p.description || '',
+      });
+    });
     if (!list.length) {
       list.push({ id: meta.pipeline || 'OCR', label: meta.pipeline || 'OCR', kind: 'structure', description: '' });
     }
     state.pipelines = list;
-    state.pipeline = meta.pipeline || list[0].id;
+    // 有智能选择时，默认选中它；否则走后端默认产线
+    state.pipeline = meta.auto_pipeline ? '' : (meta.pipeline || list[0].id);
     const select = $('#pipeline-select');
     select.innerHTML = '';
-    list.forEach((p) => {
+    list.forEach((p, idx) => {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.label + (p.id === meta.pipeline ? '（默认）' : '');
+      const isDefault = meta.auto_pipeline ? (idx === 0) : (p.id === meta.pipeline);
+      opt.textContent = p.label + (isDefault ? '（默认）' : '');
+      if (p.kind === 'auto') opt.dataset.auto = '1';
       opt.title = p.description || p.label;
       select.appendChild(opt);
     });
@@ -238,8 +252,14 @@
     const desc = $('#pipeline-desc');
     if (desc) desc.textContent = p.description || p.label;
 
-    const extra = p.kind === 'indra' ? {} : INDRA_ONLY_PARAMS;
-    const unsupported = Object.assign({}, extra, PARAM_UNSUPPORTED[p.kind] || {});
+    // auto kind：智能路由不确定最终产线，不禁用任何参数，让用户按实际需求调
+    const unsupported = p.kind === 'auto'
+      ? {}
+      : Object.assign(
+          {},
+          p.kind === 'indra' ? {} : INDRA_ONLY_PARAMS,
+          PARAM_UNSUPPORTED[p.kind] || {},
+        );
     ALL_PARAM_KEYS.forEach((key) => {
       const el = $(`input[data-param="${key}"]`);
       if (!el) return;

@@ -141,6 +141,7 @@ ENV_MAP = {
     "PADDLEX_OCR_TIER": "ocr.ocr_tier",
     "PADDLEX_OCR_CONCURRENCY": "ocr.concurrency",
     "PADDLEX_OCR_PIPELINE": "ocr.pipeline",
+    "PADDLEX_OCR_AUTO_PIPELINE": "ocr.auto_pipeline",
     "PADDLEX_OCR_PDF_DPI": "ocr.pdf_dpi",
     "PADDLEX_OCR_MAX_UPLOAD_MB": "limits.max_upload_mb",
     "PADDLEX_OCR_RETENTION_HOURS": "storage.retention_hours",

@@ -344,13 +344,10 @@ class TaskManager:
             if meta.get("cancel_requested"):
                 raise _Cancelled()
             self._update(task_id, status="running", started_at=started)
-            pipeline_id = meta.get("pipeline") or self.default_pipeline
-            engine = self.engine.get(pipeline_id) if hasattr(self.engine, "get") else self.engine
-            stage(f"加载识别模型（{getattr(engine, 'label', pipeline_id)}）…", 1)
-            engine.ensure_loaded()
 
-            stage("解析输入文件…", 3)
+            # ---- 先探测文件类型，再决定产线（智能路由依赖 kind）----
             from . import pdfio
+            from .smart_router import AUTO_TOKENS, select_pipeline
 
             input_dir = self.storage.input_dir(task_id)
             files = sorted(input_dir.glob("*"))
@@ -358,6 +355,39 @@ class TaskManager:
                 raise TaskError("上传文件丢失，请重新上传")
             src = files[0]
             kind, pages_total = pdfio.probe(src)
+
+            requested_pipeline = meta.get("pipeline")
+            available_specs = list(getattr(self.engine, "specs", []) or [])
+            rec = select_pipeline(
+                requested_pipeline=requested_pipeline,
+                kind=kind,
+                src_path=src,
+                specs=available_specs,
+                settings=self.settings,
+            )
+            pipeline_id = rec.spec_id or self.default_pipeline
+            pipeline_chosen_by_user = bool(
+                requested_pipeline and requested_pipeline not in AUTO_TOKENS
+            )
+            if pipeline_chosen_by_user:
+                log_line = f"用户选择产线：{rec.pipeline_label}（{pipeline_id}）"
+            else:
+                log_line = (
+                    f"智能产线选择：{rec.pipeline_label}（{pipeline_id}）"
+                    f" —— {rec.reason}"
+                )
+            tfile.write(log_line)
+            tfile.write(f"依据：{rec.rationale}")
+            tlog.info("任务 %s | %s", task_id, log_line)
+
+            # 把最终选择写回 meta，便于状态查询 / 重试时保留
+            meta["pipeline"] = pipeline_id
+            meta["pipeline_auto_reason"] = rec.reason
+            self._update(task_id, meta=meta, persist=True)
+
+            engine = self.engine.get(pipeline_id) if hasattr(self.engine, "get") else self.engine
+            stage(f"加载识别模型（{getattr(engine, 'label', pipeline_id)}）…", 1)
+            engine.ensure_loaded()
             if pages_total <= 0:
                 raise TaskError("文件页数为 0，可能已损坏")
             if kind == "pdf" and pages_total > max_pages:
