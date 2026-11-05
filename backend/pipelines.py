@@ -29,6 +29,12 @@ from typing import Dict, FrozenSet, List, Optional
 
 from .engine import OCR_PARAMS, STRUCTURE_PARAMS, TABLE_PARAMS
 from .indra_engine import INDRA_PARAMS, indra_available
+try:
+    from .pdf_inspector_engine import PDF_INSPECTOR_PARAMS, pdf_inspector_available
+except ImportError:  # noqa: BLE001 - 导入失败时安静降级
+    PDF_INSPECTOR_PARAMS = frozenset()
+    def pdf_inspector_available() -> bool:  # type: ignore[no-redef]
+        return False
 from .settings import PROJECT_ROOT, Settings
 from .textio import read_text_file
 
@@ -55,6 +61,7 @@ DEFAULT_LABELS = {
     "OCR": "纯文字识别（PP-OCRv6）",
     "table_recognition_v2": "通用表格识别",
     "INDRA": "Indra OCR（轻量 CPU）",
+    "PDFINSPECTOR": "PDF Inspector（Rust 快抽）",
 }
 DEFAULT_DESCRIPTIONS = {
     "PP-StructureV3": "版面检测 + OCR + 表格结构，不加载公式/印章/图表，速度快、体积小",
@@ -62,11 +69,13 @@ DEFAULT_DESCRIPTIONS = {
     "OCR": "PP-OCRv6 文本检测+识别，无表格结构，最快；档位 tiny/small/medium 由 ocr.ocr_tier 控制",
     "table_recognition_v2": "专用表格产线：表格分类 + 结构识别（有线/无线）+ 单元格检测，表格还原度最高，不解析正文段落",
     "INDRA": "1M 参数 ONNX 模型，纯 CPU、80+ 语言与手写体，输出版面块与 HTML 表格；需安装 indra-ocr",
+    "PDFINSPECTOR": "Firecrawl 出品 Rust 库：先分类（text_based/scanned/mixed），原生抽取有文本 PDF（~150ms/页）+ 结构化 Markdown（标题/列表/代码/表格）；扫描件保留给 OCR。零额外模型依赖",
 }
 
-# 前端下拉框的固定展示顺序（纯文字 → 精简 → 完整 → 通用表格识别 → Indra）
+# 前端下拉框的固定展示顺序（纯文字 → PDF Inspector 快抽 → 精简 → 完整 → 通用表格识别 → Indra）
 PIPELINE_ORDER = [
     "OCR",
+    "PDFINSPECTOR",
     "PP-StructureV3",
     "PP-StructureV3-full",
     "table_recognition_v2",
@@ -169,6 +178,8 @@ def _params_for_kind(kind: str) -> FrozenSet[str]:
         return frozenset(TABLE_PARAMS)
     if kind == "indra":
         return frozenset(INDRA_PARAMS)
+    if kind == "pdf_inspector":
+        return frozenset(PDF_INSPECTOR_PARAMS)
     return frozenset(STRUCTURE_PARAMS)
 
 
@@ -241,6 +252,28 @@ def build_registry(settings: Settings) -> List[PipelineSpec]:
             )
         else:
             log.info("已启用 Indra OCR，但未安装 indra-ocr；该产线暂不注册（pip install indra-ocr 后重启）")
+
+    # 可选产线：pdf-inspector（Rust 实现的 PDF 分类 + 原生抽取）。
+    # 纯 wheel，不需要模型目录 / GPU / OCR runtime。
+    if settings.get("pdf_inspector.enabled", True):
+        if pdf_inspector_available():
+            specs.append(
+                PipelineSpec(
+                    id="PDFINSPECTOR",
+                    label=DEFAULT_LABELS["PDFINSPECTOR"],
+                    arg="pdf_inspector",
+                    kind="pdf_inspector",
+                    description=DEFAULT_DESCRIPTIONS["PDFINSPECTOR"],
+                    config_file="",
+                    params=frozenset(PDF_INSPECTOR_PARAMS),
+                    backend="pdf_inspector",
+                )
+            )
+        else:
+            log.info(
+                "已启用 PDF Inspector，但未安装 pdf-inspector；"
+                "该产线暂不注册（pip install pdf-inspector 后重启）"
+            )
 
     # 允许用 ocr.available_pipelines 限定展示/可用范围（例如只暴露精简版）
     allow = settings.get("ocr.available_pipelines") or []

@@ -101,6 +101,12 @@ DEFAULTS: Dict[str, Any] = {
         "math": False,
         "keep_furniture": False,
     },
+    # 可选产线：pdf-inspector（Firecrawl 出品 Rust wheel；纯 CPU，零 OCR runtime）
+    # 需先安装可选依赖：pip install -r requirements-pdf-inspector.txt
+    # 未安装时该产线不会出现在下拉框，PaddleX 产线完全不受影响。
+    "pdf_inspector": {
+        "enabled": True,
+    },
     "storage": {
         "data_dir": "data",
         "log_dir": "logs",
@@ -143,6 +149,8 @@ ENV_MAP = {
     "PADDLEX_OCR_INDRA_ENABLED": "indra.enabled",
     "PADDLEX_OCR_INDRA_MODEL_DIR": "indra.model_dir",
     "PADDLEX_OCR_INDRA_THREADS": "indra.threads",
+    # pdf-inspector（可选产线）
+    "PADDLEX_OCR_PDF_INSPECTOR_ENABLED": "pdf_inspector.enabled",
     # 模型缓存目录（离线核心）：默认 <项目>/models/paddlex_home
     "PADDLEX_OCR_MODEL_HOME": "_model_home",
 }

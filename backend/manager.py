@@ -369,6 +369,17 @@ class TaskManager:
             tfile.write(f"文件类型={kind} 页数={pages_total} 大小={meta.get('size')}B")
             tlog.info("开始处理 %s（%s，%s 页）", meta.get("filename"), kind, pages_total)
 
+            # pdf-inspector（Rust 原生抽取）：吃完整 PDF 一次性解析，不适合逐页渲染。
+            # 图片（kind != pdf）不路由到这里。路由完成后 doc.pages 会被填充，
+            # 后续逐页 OCR 循环会因为 pages 已被填满而被跳过。
+            backend = getattr(engine, "backend", "paddlex")
+            pdf_inspector_done = False
+            if backend == "pdf_inspector" and kind == "pdf":
+                self._run_pdf_inspector(
+                    task_id, src, pages_total, params, engine, doc, tfile, tlog
+                )
+                pdf_inspector_done = True
+
             dpi = int(self.settings.get("ocr.pdf_dpi", 200) or 200)
             max_side = int(self.settings.get("ocr.max_side_px", 2400) or 0)
             max_pixels = int(self.settings.get("limits.max_image_pixels", 50_000_000) or 0)
@@ -416,6 +427,9 @@ class TaskManager:
             )
 
             for index in range(pages_total):
+                # pdf-inspector 已完成整 PDF 快抽，跳过逐页渲染 + OCR 循环
+                if pdf_inspector_done:
+                    break
                 current = self.get(task_id) or {}
                 if current.get("cancel_requested"):
                     raise _Cancelled()
@@ -557,6 +571,121 @@ class TaskManager:
         )
         tfile.write(message, "ERROR")
         tlog.error("任务失败 %s: %s", task_id, message)
+
+    # ------------------------------------------------------------------ pdf-inspector 快抽路径
+    def _run_pdf_inspector(
+        self,
+        task_id: str,
+        src: Path,
+        pages_total: int,
+        params: Dict[str, Any],
+        engine: Any,
+        doc: Any,
+        tfile: Any,
+        tlog: Any,
+    ) -> Dict[str, Any]:
+        """pdf-inspector 专用整 PDF 路径。
+
+        pdf-inspector 的 Rust 实现一次性解析整 PDF 拿到分类 + Markdown，
+        跨页字体统计影响 header 检测，所以必须整文件调用 ``predict_pdf``，
+        而不是 ``run`` 里逐页渲染 + ``predict_page``。
+        """
+        from .docmodel import Page
+
+        tfile.write("使用 PDF Inspector（Rust 快抽）一次性解析整 PDF", "INFO")
+        self._update(task_id, progress=10, pages_done=0, stage="PDF Inspector 分类与抽取…", persist=True)
+
+        started = time.time()
+        try:
+            result = engine.predict_pdf(src, params)
+        except Exception as exc:  # noqa: BLE001 - EngineError 已经包装好；其他异常兜底
+            detail = traceback.format_exc()
+            self._fail(
+                task_id,
+                message=f"pdf-inspector 解析失败：{exc}",
+                detail=detail,
+                tfile=tfile,
+                tlog=tlog,
+            )
+            raise TaskError(str(exc)) from exc
+
+        blocks = result.blocks or []
+        elapsed_ms = int((time.time() - started) * 1000)
+        raw = result.raw or {}
+        pdf_type = raw.get("pdf_type", "unknown")
+        confidence = raw.get("confidence", 0.0)
+        pages_needing_ocr = raw.get("pages_needing_ocr", []) or []
+
+        tfile.write(
+            f"pdf-inspector 完成 | 类型={pdf_type} 置信度={confidence:.2f} "
+            f"需 OCR 页数={len(pages_needing_ocr)} 耗时={elapsed_ms}ms"
+        )
+        if pages_needing_ocr:
+            tfile.write(
+                f"以下 {len(pages_needing_ocr)} 页被判定为扫描/图片页："
+                f"{[p + 1 for p in pages_needing_ocr]}（按 1-index 显示）。"
+                "当前 pdf-inspector 产线只做快抽，不对扫描页做 OCR；"
+                "换用 PP-StructureV3 等 PaddleX 产线可自动处理。",
+                "WARN",
+            )
+
+        if blocks:
+            if self.settings.get("storage.keep_raw_json", True) and raw:
+                from .storage import atomic_write_json
+
+                atomic_write_json(
+                    self.storage.raw_dir(task_id) / "document.json",
+                    raw,
+                )
+            # pdf-inspector 不区分页——输出是整 PDF 的 Markdown。
+            # 为了保持与 PaddleX 逐页模式一致，我们把同一份 blocks 挂到每个 Page 上，
+            # 并把 raw / 总耗时挂到最后一页的 raw 里供前端展示。
+            for i in range(pages_total):
+                page_no = i + 1
+                is_last = page_no == pages_total
+                page_raw = dict(raw) if is_last else None
+                page_blocks = list(blocks)  # 全量 blocks 复制给每页——导出时用户可见，单页预览会稍长
+                page = Page(
+                    index=page_no,
+                    width=0,
+                    height=0,
+                    blocks=page_blocks,
+                    elapsed_ms=elapsed_ms if is_last else 0,
+                    raw=page_raw,
+                )
+                doc.pages.append(page)
+
+            # 快抽产线没有逐页进度——直接把 progress 提到 95%（剩下 5% 是导出）
+            self._update(
+                task_id,
+                progress=95,
+                pages_done=pages_total,
+                pages_total=pages_total,
+                stage=f"分类={pdf_type}（{confidence:.0%}）blocks={len(blocks)}，正在导出…",
+                persist=True,
+            )
+        else:
+            # 抽取不到内容（全扫描 / 空 PDF）
+            tfile.write(
+                "未抽到任何文本块——可能全是扫描/图片页。"
+                "换用 PP-StructureV3 产线可自动处理。",
+                "WARN",
+            )
+            for i in range(pages_total):
+                page_no = i + 1
+                is_last = page_no == pages_total
+                page = Page(
+                    index=page_no,
+                    width=0,
+                    height=0,
+                    blocks=[],
+                    elapsed_ms=elapsed_ms if is_last else 0,
+                    raw=dict(raw) if is_last else None,
+                )
+                doc.pages.append(page)
+
+        self._update(task_id, doc=doc, pages_done=pages_total, progress=95, persist=True)
+        # 填充 doc.pages 结束；主 run 后续会继续做 save_result / stats / 导出
 
     # ------------------------------------------------------------------ 控制
     def cancel(self, task_id: str) -> Dict[str, Any]:

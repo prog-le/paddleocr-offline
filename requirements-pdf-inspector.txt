@@ -1,0 +1,25 @@
+# =============================================================================
+# 可选依赖：pdf-inspector（Firecrawl 出品，Rust 实现的 PDF 分类 + 原生文本抽取）
+# -----------------------------------------------------------------------------
+# 为什么单独一份：
+#   1) 纯 Rust wheel（~6.5 MB），无 Python 依赖；直接和 cp312 wheel 离线分发即可；
+#   2) 4 平台全覆盖（linux x86_64/aarch64 · macOS arm64 · Windows x64），cp38-abi3
+#      与本项目目标 cp312 wheel 天然兼容；
+#   3) 不装时产线不注册（类似 Indra OCR），PaddleX 产线完全不受影响。
+#
+#   pdf-inspector 提供「智能路由 + 快抽」能力：
+#     * 先 ~20ms 分类：TextBased / Scanned / ImageBased / Mixed；
+#     * TextBased 页 ~150ms 抽原生文本 + Markdown（标题 H1-H4 / 列表 / 代码块 / 表格 / 加粗等），
+#       绕开昂贵 OCR；
+#     * 扫描/图片页保留给 PaddleX 产线；
+#     * 默认 process_pdf() 不碰任何 OCR runtime，零额外运行时。
+#
+# 用法：
+#   pip install -r requirements-pdf-inspector.txt
+#   # 或：pip install pdf-inspector==1.25.2
+#   # 国内镜像：
+#   pip install -i https://mirrors.ustc.edu.cn/pypi/simple \
+#       -r requirements-pdf-inspector.txt
+# =============================================================================
+
+pdf-inspector==1.25.2

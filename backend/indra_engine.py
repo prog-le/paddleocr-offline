@@ -182,6 +182,7 @@ class IndraEngine:
         self.pipeline_name = self.pipeline_id
         self.label = getattr(spec, "label", "Indra OCR")
         self.kind = getattr(spec, "kind", "indra")
+        self.backend = getattr(spec, "backend", "indra")
         self.log = get_logger("ocr.indra")
         self.concurrency = max(int(settings.get("ocr.concurrency", 1) or 1), 1)
         self.device = "cpu"

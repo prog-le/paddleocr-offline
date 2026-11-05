@@ -1,7 +1,7 @@
 # PaddleX OCR Web · 离线文字与表格识别站点
 
 > 上传 **图片 / PDF** → PaddleX 产线 **OCR + 表格识别** → 网页预览 → 导出 **Word / Excel / TXT / Markdown**
-> 可选接入 **Indra OCR**（轻量 CPU 模型）：80+ 语言、手写体、自动纠偏，与 PaddleX 产线并列选择。
+> 可选接入 **pdf-inspector**（Rust 快抽）与 **Indra OCR**（轻量 CPU 模型）：pdf-inspector 对有原生文本的 PDF ~150 ms/页抽结构化 Markdown（标题 / 列表 / 表格 / 代码块 / 加粗），绕开昂贵 OCR；Indra OCR 提供 80+ 语言、手写体、自动纠偏。
 > 支持 **x86_64 与 ARM64 (aarch64)**，支持 **本地原生部署** 与 **Docker 容器部署**，部署完成后 **运行期完全离线**。
 > CPU 即可运行，**可选 NVIDIA GPU (CUDA) 加速**；Apple Silicon 以原生 arm64 CPU 运行。
 
@@ -12,7 +12,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 文件输入 | PDF、JPG、PNG、BMP、TIFF、WEBP；支持多文件批量上传 |
-| 识别 | PaddleX 集成产线，**任务级可选**：纯文字识别、通用版面解析 v3（精简/完整）、通用表格识别；可选接入 Indra OCR（轻量 CPU、80+ 语言、手写体） |
+| 识别 | PaddleX 集成产线，**任务级可选**：纯文字识别、通用版面解析 v3（精简/完整）、通用表格识别；可选接入 **pdf-inspector**（Firecrawl Rust 快抽，原生文本 PDF ~150 ms/页）与 **Indra OCR**（轻量 CPU、80+ 语言、手写体） |
 | 多产线 | `config/pipelines/*.yaml` 即产线，前端下拉框按批选择；各产线按需懒加载、互不影响 |
 | 排版还原 | 按阅读顺序输出标题/段落/表格/图注；表格保留 `rowspan/colspan` 合并结构 |
 | 预览 | 网页直接渲染文本与表格（真实表格样式，非纯文本） |
@@ -41,6 +41,7 @@ paddlex-ocr-web/
 ├── requirements.txt                 # 运行时依赖（Linux 目标机，版本已锁定）
 ├── requirements-macos.txt           # macOS 本机联调用（paddle 3.3.1）
 ├── requirements-indra.txt           # 可选：Indra OCR 轻量产线依赖
+├── requirements-pdf-inspector.txt   # 可选：pdf-inspector（Firecrawl Rust 快抽）产线依赖
 ├── .gitignore
 ├── .dockerignore
 ├── config/
@@ -59,6 +60,7 @@ paddlex-ocr-web/
 │   ├── devices.py                   # 设备探测（CPU/GPU/XPU/NPU、Apple Silicon 限制、显存）
 │   ├── engine.py                    # 单条产线封装（实例池 + 结果归一化）
 │   ├── indra_engine.py              # Indra OCR 适配层（可选产线，结果归一化）
+│   ├── pdf_inspector_engine.py       # pdf-inspector 适配层（可选产线，整 PDF 一次性快抽）
 │   ├── engine_pool.py               # 多产线路由（按任务所选产线懒加载）
 │   ├── pipelines.py                 # 产线注册表（扫描 config/pipelines/*.yaml）
 │   ├── mock_engine.py               # MOCK 引擎（无模型联调/自检）
@@ -187,8 +189,9 @@ paddlex-ocr-web/
 > 可整体退回 `paddlepaddle==3.3.1`（PyPI 提供 x86_64、官方 CPU 源提供 aarch64，
 > 双架构同样可用），按 §6.1 重新下载 wheel 与模型即可，代码无需改动。
 
-> **产线选择**：站点内置**四条** PaddleX 官方产线，按批选用（默认 `PP-StructureV3`），
-> 另可选接入 **Indra OCR**（装在环境里才会出现），详见下一小节。`PP-StructureV3` 由「版面区域检测 + OCR 子产线 + 表格识别子产线」组成，
+> **产线选择**：站点内置**四条** PaddleX 官方产线，按批选用（默认 `PP-StructureV3`）；
+> 另可选接入 **pdf-inspector**（Firecrawl 出品 Rust 快抽，装在环境里才会出现）与
+> **Indra OCR**（1M 参数 ONNX 轻量 CPU 模型），详见下一小节。`PP-StructureV3` 由「版面区域检测 + OCR 子产线 + 表格识别子产线」组成，
 > 输出的 `parsing_res_list` 已按阅读顺序排好，最适合"整页还原"；
 > 只要表格用 `table_recognition_v2`（表格还原度最高、不解析正文）；只要文字用 `OCR`（最快）。
 
@@ -202,8 +205,22 @@ paddlex-ocr-web/
 | 2 | `PP-StructureV3`（默认） | 通用版面解析 v3（精简） | 版面检测 + OCR + 表格结构 + 公式 | ~1.9 GB | 30~120 s | 常规公文、报价单、发票 |
 | 3 | `PP-StructureV3-full` | 通用版面解析 v3（完整） | 上述 + **区域检测** + **印章识别** + 文档方向/矫正 | ~2.0 GB | 40~180 s | 复杂版面、多栏、带红章/公式的正式文件 |
 | 4 | `table_recognition_v2` | 通用表格识别 | **专用表格产线**：表格分类 + 结构识别（有线 `SLANeXt_wired` / 无线 `SLANeXt_wireless`）+ 单元格检测（RT-DETR）+ 按单元格重新 OCR | 与精简版共用，另加 ~30 MB | 40~150 s | **只要表格**（报表、对账单、票据明细），跳过正文解析，表格还原度最高 |
-| 5 | `INDRA`（可选） | Indra OCR | Datalab 1M 参数 ONNX 模型：80+ 语言、手写体、任意角度页面；输出阅读顺序版面块与 HTML 表格 | ~76 MB | CPU 约 0.2~1 s | 轻量 CPU 场景、手写件、多语种；**不做单元格级表格还原** |
+| 5 | `PDFINSPECTOR`（可选） | PDF Inspector（Rust 快抽） | Firecrawl 出品 Rust 库：先分类（`text_based` / `scanned` / `image_based` / `mixed`），有原生文本的页 ~150 ms 抽标题/列表/表格/代码块/加粗/超链接/自动阅读顺序的 Markdown；扫描页识别出来后**不自动 OCR**，请换 PaddleX 产线 | **无**（纯 Rust wheel ~6.5 MB） | **~150 ms/页** | 原生文本 PDF（合同、手册、论文正文）秒级快抽；扫描件无效；**只能吃完整 PDF**（图片任务不会路由到这里） |
+| 6 | `INDRA`（可选） | Indra OCR | Datalab 1M 参数 ONNX 模型：80+ 语言、手写体、任意角度页面；输出阅读顺序版面块与 HTML 表格 | ~76 MB | CPU 约 0.2~1 s | 轻量 CPU 场景、手写件、多语种；**不做单元格级表格还原** |
 
+> **PDF Inspector（可选产线）**：默认不安装，安装后自动注册到下拉框（排在 PaddleX 产线之后、Indra 之前）。
+> ```bash
+> pip install -r requirements-pdf-inspector.txt   # 或 pip install pdf-inspector
+> ```
+> 装完重启服务即可；**没有模型目录 / 没有 GPU / 没有 OCR runtime**——纯 wheel 就能跑。
+> 它吃完整 PDF 一次性解析，所以**只能处理 PDF 文件**（上传图片到这个产线会被后端拒绝，
+> 请用 PaddleX 产线）。分类结果会透传到任务日志：
+> ```
+> pdf-inspector 完成 | 类型=text_based 置信度=1.00 需 OCR 页数=0 耗时=16ms
+> ```
+> 若 `pages_needing_ocr` 非空，说明 PDF 里混有扫描/图片页——当前 `PDFINSPECTOR` 产线只给它们
+> 一个提示，**不会自动 OCR**；换 PaddleX 产线就会被 OCR 处理。
+>
 > **Indra OCR（可选产线）**：默认不安装，安装后自动注册到下拉框末尾。
 > ```bash
 > pip install -r requirements-indra.txt   # 或 pip install indra-ocr
@@ -695,6 +712,7 @@ sudo journalctl -u paddlex-ocr-web -f
 | `ocr.defaults.*` | 见文件 | 识别阈值与子模块开关（前端可临时覆盖） |
 | `indra.enabled` | `true` | 是否启用 Indra OCR 产线（需已安装 `indra-ocr`，改完重启生效） |
 | `indra.model_dir` | `""` | Indra 模型目录；留空用包内缓存，离线部署建议 `models/indra` |
+| `pdf_inspector.enabled` | `true` | 是否启用 PDF Inspector 产线（需已安装 `pdf-inspector`，改完重启生效；纯 Rust wheel，无模型/GPU/OCR runtime） |
 | `indra.threads` | `0` | ONNX Runtime 线程数，0=使用 indra-ocr 默认值（4） |
 | `indra.math` / `indra.keep_furniture` | `false` | 公式转 LaTeX / 保留页眉页脚默认值（前端可临时覆盖） |
 | `storage.retention_hours` | `24` | 结果保留时长，到期自动清理 |
