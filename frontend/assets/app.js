@@ -247,6 +247,28 @@
     keep_furniture: '仅 Indra OCR 支持（保留页眉页脚）',
   };
 
+  // auto 模式下每个参数的场景提示：分两类
+  //  •  Indra 专属 / PaddleX 专属：标注"仅当路由到 Y 产线时生效"
+  //  •  PDFINSPECTOR 不支持的：标注"原生抽取自带 X，路由到 Y 产线时此开关才生效"
+  const PARAM_AUTO_HINT = {
+    math: '仅当路由到「Indra OCR」时生效（扫描 PDF 含数学公式才会启用）',
+    keep_furniture: '仅当路由到「Indra OCR」时生效（保留页眉页脚等非正文区域）',
+
+    use_table_recognition: 'PDFINSPECTOR 原生抽取自带表格还原；路由到 PaddleX 版面解析/表格产线时此开关生效',
+    use_formula_recognition: '仅 PaddleX 版面解析产线支持；Indra OCR 用 math 开关处理公式；PDFINSPECTOR 无公式识别',
+    use_seal_recognition: '仅 PaddleX 版面解析产线支持；PDFINSPECTOR / Indra OCR 不含印章识别',
+
+    use_doc_orientation_classify: '仅 PaddleX 版面解析产线支持（自动识别页面旋转方向）',
+    use_doc_unwarping: '仅 PaddleX 版面解析产线支持（扫描件弯曲矫正）',
+    use_textline_orientation: '仅 PaddleX 版面解析产线支持（文本行方向分类）',
+
+    text_det_box_thresh: '仅 PaddleX 产线支持（文本检测框置信度阈值）',
+    text_det_thresh: '仅 PaddleX 产线支持（像素级文本检测阈值）',
+    text_rec_score_thresh: '仅 PaddleX 产线支持（识别分数阈值）',
+    layout_threshold: '仅 PaddleX 产线支持（版面分析置信度阈值）',
+    text_det_limit_side_len: '仅 PaddleX 产线支持（检测输入边长限制）',
+  };
+
   function applyPipelineUI() {
     const p = currentPipeline();
     const desc = $('#pipeline-desc');
@@ -274,25 +296,40 @@
       autoHint.style.display = 'none';
     }
 
-    // auto kind：智能路由不确定最终产线，不禁用任何参数，让用户按实际需求调
-    const unsupported = p.kind === 'auto'
-      ? {}
-      : Object.assign(
-          {},
-          p.kind === 'indra' ? {} : INDRA_ONLY_PARAMS,
-          PARAM_UNSUPPORTED[p.kind] || {},
-        );
-    ALL_PARAM_KEYS.forEach((key) => {
-      const el = $(`input[data-param="${key}"]`);
-      if (!el) return;
-      const reason = unsupported[key] || '';
-      el.disabled = Boolean(reason);
-      const wrap = el.closest('.switch') || el.closest('.slider');
-      if (wrap) {
-        wrap.style.opacity = reason ? '.45' : '1';
-        wrap.title = reason;
-      }
-    });
+    if (p.kind === 'auto') {
+      // auto 模式：**不禁用任何参数**（让用户按实际需求调），但给每个参数加 tooltip
+      // 说明适用场景，并用半透明弱化"不是所有产线都支持"的参数
+      ALL_PARAM_KEYS.forEach((key) => {
+        const el = $(`input[data-param="${key}"]`);
+        if (!el) return;
+        const hint = PARAM_AUTO_HINT[key] || '所有产线都支持此参数';
+        el.disabled = false;
+        const wrap = el.closest('.switch') || el.closest('.slider');
+        if (wrap) {
+          // 不支持所有注册产线的参数 → 半透明（.75），给视觉暗示"不是所有场景都生效"
+          wrap.style.opacity = PARAM_AUTO_HINT[key] ? '.75' : '1';
+          // 鼠标悬停 + 点击时都能看到 tooltip
+          wrap.title = hint;
+        }
+      });
+    } else {
+      const unsupported = Object.assign(
+        {},
+        p.kind === 'indra' ? {} : INDRA_ONLY_PARAMS,
+        PARAM_UNSUPPORTED[p.kind] || {},
+      );
+      ALL_PARAM_KEYS.forEach((key) => {
+        const el = $(`input[data-param="${key}"]`);
+        if (!el) return;
+        const reason = unsupported[key] || '';
+        el.disabled = Boolean(reason);
+        const wrap = el.closest('.switch') || el.closest('.slider');
+        if (wrap) {
+          wrap.style.opacity = reason ? '.45' : '1';
+          wrap.title = reason;
+        }
+      });
+    }
   }
 
   function applyParams(params) {
