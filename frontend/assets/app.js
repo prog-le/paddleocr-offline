@@ -519,6 +519,7 @@
       const parts = [];
       parts.push(STATUS_TEXT[task.status] || task.status);
       if (task.pipeline_label) parts.push(task.pipeline_label);
+      if (task.pipeline_auto_reason) parts.push('⚡ ' + task.pipeline_auto_reason);
       parts.push(fmtSize(task.size));
       if (task.pages_total > 1) parts.push(`${task.pages_done || 0}/${task.pages_total} 页`);
       if (task.status === 'pending' && task.queue_position) parts.push('第 ' + task.queue_position + ' 位');
@@ -690,6 +691,14 @@
       span.innerHTML = escapeHtml(k) + ' <b>' + escapeHtml(v) + '</b>';
       meta.appendChild(span);
     });
+    // 智能产线选择的理由：后端 doc.auto_pipeline_reason 透传
+    if (doc.auto_pipeline_reason) {
+      const span = document.createElement('span');
+      span.style.color = 'var(--info, #0d6efd)';
+      span.textContent = '⚡ ' + doc.auto_pipeline_reason;
+      span.title = '后端 smart_router 自动选择这条产线的理由';
+      meta.appendChild(span);
+    }
     (doc.warnings || []).forEach((w) => {
       const span = document.createElement('span');
       span.style.color = 'var(--warn)';

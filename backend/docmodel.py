@@ -136,6 +136,8 @@ class Doc:
     name: str = ""
     source_type: str = "image"  # image | pdf
     pipeline: str = ""
+    # 智能产线选择的理由（smart_router 写入；用户手动选产线时为空）
+    auto_pipeline_reason: Optional[str] = None
     pages: List[Page] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     params: Dict[str, Any] = field(default_factory=dict)
@@ -165,7 +167,7 @@ class Doc:
                     yield b
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "name": self.name,
             "source_type": self.source_type,
             "pipeline": self.pipeline,
@@ -175,6 +177,9 @@ class Doc:
             "stats": self.stats(),
             "pages": [p.to_dict() for p in self.pages],
         }
+        if self.auto_pipeline_reason:
+            d["auto_pipeline_reason"] = self.auto_pipeline_reason
+        return d
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Doc":
@@ -182,6 +187,9 @@ class Doc:
             name=str(d.get("name") or ""),
             source_type=str(d.get("source_type") or "image"),
             pipeline=str(d.get("pipeline") or ""),
+            auto_pipeline_reason=(
+                str(d.get("auto_pipeline_reason")) if d.get("auto_pipeline_reason") else None
+            ),
             created_at=float(d.get("created_at") or time.time()),
             params=d.get("params") or {},
             warnings=list(d.get("warnings") or []),

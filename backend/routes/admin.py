@@ -191,9 +191,25 @@ async def admin_cancel(request: Request, task_id: str) -> Dict[str, Any]:
 
 @router.post("/tasks/{task_id}/retry")
 async def admin_retry(request: Request, task_id: str) -> Dict[str, Any]:
+    """重试任务。可选 body: {"pipeline": "PP-StructureV3"} / {"pipeline": ""} / {"params": {...}}
+
+    - pipeline="" / "auto" 会重新触发智能产线选择
+    - params 更新识别参数（只覆盖传入的字段）
+    """
     require_admin(request)
+    pipeline = None
+    params = None
     try:
-        return request.app.state.manager.retry(task_id)
+        body = await request.json()
+        if isinstance(body, dict):
+            if "pipeline" in body:
+                pipeline = body["pipeline"] if body["pipeline"] is not None else ""
+            if "params" in body and isinstance(body["params"], dict):
+                params = body["params"]
+    except Exception:
+        body = None  # noqa: F841
+    try:
+        return request.app.state.manager.retry(task_id, pipeline=pipeline, params=params)
     except TaskError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

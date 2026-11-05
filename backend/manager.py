@@ -454,6 +454,9 @@ class TaskManager:
                 source_type=kind,
                 pipeline=f"{getattr(engine, 'label', pipeline_id)}（{pipeline_id}）",
                 params=params,
+                auto_pipeline_reason=(
+                    rec.reason if not pipeline_chosen_by_user else None
+                ),
             )
 
             for index in range(pages_total):
@@ -741,7 +744,7 @@ class TaskManager:
             self._tasks.pop(task_id, None)
         return self.storage.delete_task(task_id)
 
-    def retry(self, task_id: str) -> Dict[str, Any]:
+    def retry(self, task_id: str, pipeline: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         meta = self.get(task_id)
         if not meta:
             raise TaskError("任务不存在")
@@ -761,8 +764,7 @@ class TaskManager:
                 (self.storage.task_dir(task_id) / name).unlink()
             except OSError:
                 pass
-        self._update(
-            task_id,
+        update_kwargs: Dict[str, Any] = dict(
             status="pending",
             progress=0,
             stage="排队中",
@@ -778,6 +780,14 @@ class TaskManager:
             retry_of=None,
             persist=True,
         )
+        # 用户换了产线 / 参数：让 run 重新做智能路由（pipeline 为空/auto 触发）
+        if pipeline is not None:
+            update_kwargs["pipeline"] = pipeline
+            update_kwargs["pipeline_label"] = pipeline
+            update_kwargs["pipeline_auto_reason"] = None
+        if params is not None:
+            update_kwargs["params"] = params
+        self._update(task_id, **update_kwargs)
         self._dispatch(task_id)
         return self.get(task_id) or meta
 

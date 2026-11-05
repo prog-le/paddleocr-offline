@@ -53,6 +53,8 @@ def _public_task(meta: Dict[str, Any]) -> Dict[str, Any]:
     out["stats"] = meta.get("stats")
     out["pipeline"] = meta.get("pipeline")
     out["pipeline_label"] = meta.get("pipeline_label") or meta.get("pipeline")
+    # 智能产线选择的理由（smart_router 写入）
+    out["pipeline_auto_reason"] = meta.get("pipeline_auto_reason")
     out["params"] = meta.get("params") or {}
     out["result_available"] = meta.get("status") == "success"
     return out
