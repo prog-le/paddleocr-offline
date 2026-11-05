@@ -294,6 +294,7 @@ for d in backend frontend config scripts docker deploy tests; do
 done
 cp "$PROJECT_ROOT/requirements.txt" "$PROJECT_ROOT/README.md" "$STAGE/"
 [ -f "$PROJECT_ROOT/requirements-macos.txt" ] && cp "$PROJECT_ROOT/requirements-macos.txt" "$STAGE/"
+[ -f "$PROJECT_ROOT/requirements-indra.txt" ] && cp "$PROJECT_ROOT/requirements-indra.txt" "$STAGE/"
 
 mkdir -p "$STAGE/offline/wheels/$ARCH" "$STAGE/models/paddlex_home" "$STAGE/data" "$STAGE/logs"
 copy_tree "$WHEELS" "$STAGE/offline/wheels/$ARCH"
@@ -321,6 +322,11 @@ if [ "$SKIP_MODELS" -eq 0 ]; then
   copy_tree "$MODELS" "$STAGE/models/paddlex_home/official_models"
   [ -f "$PROJECT_ROOT/models/manifest.json" ] && cp "$PROJECT_ROOT/models/manifest.json" "$STAGE/models/"
   [ -f "$PROJECT_ROOT/models/README.md" ] && cp "$PROJECT_ROOT/models/README.md" "$STAGE/models/"
+  # 可选 Indra OCR 权重（models/indra）；未下载时只有 .gitkeep，不复制
+  if [ -d "$PROJECT_ROOT/models/indra" ] && \
+     [ -n "$(find "$PROJECT_ROOT/models/indra" -type f ! -name '.gitkeep' -print -quit 2>/dev/null)" ]; then
+    copy_tree "$PROJECT_ROOT/models/indra" "$STAGE/models/indra"
+  fi
 fi
 if [ "${COPY_ERRORS:-0}" -gt 0 ]; then
   die "有 $COPY_ERRORS 个目录复制不完整，已中止（避免产出残缺的交付包）"
@@ -373,7 +379,7 @@ cd ${NAME}
 
 注意：wheel 的目标 Python 为 ${PY_MINOR:-?}；包内已带 CPython ${RUNTIME_TAG} 运行时，
       目标机无需安装 Python，./scripts/install_offline.sh 会自动解包并使用它。
-${GPU_NOTE}
+${GPU_NOTE}$([ "$SKIP_MODELS" -eq 1 ] && printf '\n模型未随包提供：把 models-paddlex_home-*.tar.gz 放到包根目录后执行\n  tar xzf models-paddlex_home-*.tar.gz\n（或在联网机器下载后用 scp/rsync 拷贝 models/ 目录）')
 详细说明见 README.md「本地离线部署步骤」。
 =============================================================
 EOF

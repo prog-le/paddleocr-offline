@@ -23,7 +23,8 @@
 | 复制 | 识别结果一键复制全文 |
 | 管理后台 | 登录后可看服务状态、**各产线加载状态**、模型清单、队列、统计、任务明细（含会话标识）、任务日志、系统日志、在线改配置、暂停/恢复接单、预热/重载/**卸载产线** |
 | 离线 | 模型、Python 依赖（wheel）、镜像全部本地化；运行期不访问外网 |
-| 双架构 | 同一套代码 + 按架构分目录的 wheel + 单 Dockerfile（`TARGETARCH`） |
+| 双架构 | Linux x86_64/ARM64 同一套代码 + 按架构分目录的 wheel + 单 Dockerfile（`TARGETARCH`） |
+| 跨平台交付 | `scripts/build_deploy_package.sh --all` 一次生成 Linux amd64/arm64、Linux GPU、macOS arm64、Windows x64 离线包，自动处理 Paddle 版本 / wheel / 随包运行时的差异 |
 | 运行设备 | `auto` / `cpu` / `gpu:0`：启动自动探测，页面与后台显示实际设备；GPU 可配显存池与识别 batch。**Apple Silicon 明确只用 CPU**（Paddle 无 Metal/MPS） |
 | 免安装 Python | 交付包内自带**可重定位的 CPython 3.12.15**（x86_64 / aarch64），目标机不需要预装 python3；安装脚本自动解包到 `.runtime/python` 并据此建 venv |
 
@@ -82,16 +83,20 @@ paddlex-ocr-web/
 │   ├── env.sh                       # 公共函数（架构识别/配置读取/日志着色）
 │   ├── preflight.sh                 # 环境自检
 │   ├── install_dev.sh               # 开发机在线安装（macOS 用 3.3.1）
-│   ├── download_python_runtime.sh   # 下载随包 CPython 3.12 运行时（双架构）
+│   ├── download_python_runtime.sh   # 下载随包 CPython 3.12 运行时（Linux/macOS/Windows）
 │   ├── verify_runtime.sh            # 校验运行时 sha256 / ELF 架构 / GLIBC 版本
-│   ├── download_wheels.sh           # 依赖离线包预下载（双架构 / CPU·GPU）
+│   ├── download_wheels.sh           # 依赖离线包预下载（Linux/macOS/Windows × CPU·GPU）
 │   ├── verify_gpu_wheel.sh          # 校验 GPU 轮子（无需显卡）
 │   ├── gpu_deps.py                  # 补齐/检查 CUDA 运行库依赖（nvidia-*/cuda-python）
 │   ├── download_models.py           # 模型离线打包
 │   ├── download_indra_models.py     # Indra OCR 模型离线打包（可选）
-│   ├── make_offline_bundle.sh       # 生成整包 tar.gz（--device gpu 生成 GPU 包）
-│   ├── install_offline.sh           # 离线安装依赖（建 venv）
+│   ├── build_deploy_package.sh      # 一键生成全平台部署包（推荐入口）
+│   ├── make_offline_bundle.sh       # 生成 Linux 整包 tar.gz（--device gpu 生成 GPU 包）
+│   ├── make_platform_bundle.sh      # 生成 macOS / Windows 整包
+│   ├── install_offline.sh           # 离线安装依赖（Linux / macOS，建 venv）
+│   ├── install_windows.ps1          # Windows 离线安装（PowerShell 5.1）
 │   ├── start.sh / stop.sh / status.sh
+│   ├── start_windows.ps1 / stop_windows.ps1  # Windows 启停
 │   ├── smoke_test.py                # 端到端自检（模型+推理+四格式导出）
 │   └── docker_health.py             # 容器健康检查
 ├── deploy/
@@ -162,7 +167,7 @@ paddlex-ocr-web/
 | --- | --- | --- |
 | Python | **3.12**（随包 **CPython 3.12.15**） | 本地部署用包内运行时，Docker 用 `python:3.12-slim-bookworm`；wheel 标签统一 `cp312`。兼容 3.10~3.13，但换版本须同时换运行时并重下 wheel |
 | PaddlePaddle | **3.4.0 (CPU)** | 官方 CPU 源同时提供 `linux_x86_64` 与 `linux_aarch64` wheel |
-| PaddlePaddle（macOS 联调） | **3.3.1 (CPU)** | macOS 无 3.4.0 轮子，本地调试用 3.3.1（`requirements-macos.txt`）；macOS 版只有 CPU 内核 |
+| PaddlePaddle（macOS / Windows） | **3.3.1 (CPU)** | PyPI 无 3.4.0 轮子；macOS 仅 Apple Silicon（`macosx_11_0_arm64`），Windows 仅 x64（`win_amd64`）；macOS 为本地联调，Windows 为原生部署（`requirements-windows.txt`） |
 | PaddlePaddle（NVIDIA GPU） | **3.4.0 (GPU)** | `paddlepaddle-gpu`，官方 `cu129`/`cu130` 源，仅 `linux_x86_64`；paddle 轮子约 **3.35 GB**；CUDA/cuDNN 运行库由 `nvidia-*` pip 包提供（另约 3 GB，随离线包分发） |
 | PaddleX | **3.7.2** | `paddlex[ocr]`，含 OCR / 表格识别 / 版面分析所需依赖 |
 | FastAPI / Uvicorn | 0.115+ / 0.30+ | 轻量 Web 层 |
@@ -260,7 +265,8 @@ paddlex-ocr-web/
 | --- | --- | --- |
 | Linux x86_64 + NVIDIA GPU | ✅ **CUDA 加速** | 装 GPU 版 Paddle（`paddlepaddle-gpu` + `nvidia-*` 运行库，均由离线包提供），宿主机装驱动 + `nvidia-container-toolkit`（容器场景）；`device: auto` 或 `gpu:0` |
 | Linux arm64 | ✅ CPU | 官方 GPU 轮子**没有 aarch64**，ARM 服务器只能用 CPU（或自行用 NVIDIA NGC 镜像） |
-| macOS Apple Silicon | ✅ 原生运行 / ❌ 无 GPU 后端 | PaddlePaddle 没有 Metal/MPS 后端，**只能用 CPU**；配置 `gpu`/`mps` 会自动降级并在页面/日志提示原因 |
+| macOS Apple Silicon | ✅ 原生运行 / ❌ 无 GPU 后端 | PaddlePaddle 没有 Metal/MPS 后端，**只能用 CPU**；配置 `gpu`/`mps` 会自动降级并在页面/日志提示原因。Intel Mac 无可用轮子 |
+| Windows x64 | ✅ 原生运行（CPU） | Paddle 3.3.1；需预装 **VC++ 2015-2022 x64**；Windows ARM64 无轮子 |
 | Intel XPU / 华为 NPU | ⚠ 取决于 Paddle 编译 | `device: xpu:0` / `npu:0`；本项目未随包提供对应 wheel，需自行替换 Paddle 版本 |
 
 #### 设备写法与切换
@@ -434,6 +440,56 @@ PADDLEX_OCR_PIPELINE=OCR ./scripts/start.sh --port 8000
 > `install_offline.sh` 会把它解包到 `.runtime/python` 并用它创建 `.venv`，
 > 全程不调用系统 `python3`（也不需要 `python3-venv`/编译工具）。
 
+### 6.0 一键生成部署包（推荐）
+
+需要覆盖多个操作系统/架构时，不要手工逐个跑下载与打包脚本，用总入口：
+
+```bash
+./scripts/build_deploy_package.sh --list-targets    # 查看平台矩阵与依赖文件
+./scripts/build_deploy_package.sh                   # 只打当前构建机平台
+./scripts/build_deploy_package.sh --all             # 4 个 CPU 平台
+./scripts/build_deploy_package.sh --all --with-gpu  # 再加 Linux NVIDIA GPU
+./scripts/build_deploy_package.sh --targets "linux-amd64,windows-amd64"
+./scripts/build_deploy_package.sh --all --models-separate   # 模型单独一个包，避免重复 4 份
+./scripts/build_deploy_package.sh --all --skip-download     # 复用已下载的 wheel/运行时
+./scripts/build_deploy_package.sh --all --dry-run           # 只打印将执行的命令
+```
+
+平台矩阵（以 Paddle/PaddleX 上游实际发布的 wheel 为准）：
+
+| 目标 id | 系统 | 架构 | 设备 | Paddle 版本 | 依赖文件 | 产物 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `linux-amd64` | Linux | x86_64 | CPU | 3.4.0 | `requirements.txt` | `...-amd64.tar.gz` |
+| `linux-arm64` | Linux | aarch64 | CPU | 3.4.0 | `requirements.txt` | `...-arm64.tar.gz` |
+| `linux-amd64-gpu` | Linux | x86_64 | NVIDIA GPU | 3.4.0 | `requirements.txt` + GPU wheel | `...-amd64-gpu.tar.gz` |
+| `macos-arm64` | macOS 11+ | Apple Silicon | CPU | 3.3.1 | `requirements-macos.txt` | `...-macos-arm64.tar.gz` |
+| `windows-amd64` | Windows 10 1803+ | x64 | CPU | 3.3.1 | `requirements-windows.txt` | `...-windows-amd64.zip` |
+
+明确不支持（上游没有轮子，脚本会直接报错而不是打出坏包）：
+
+- **macOS Intel**：PyPI 只发布 `macosx_11_0_arm64`，请改用 `macos-arm64` 或 Docker；
+- **Windows ARM64**：没有 `paddlepaddle` 轮子，请改用 `windows-amd64`；
+- **Linux ARM64 + NVIDIA GPU**：GPU 轮子仅 `linux_x86_64`，ARM 请用 NVIDIA NGC 镜像。
+
+产物统一放在 `dist/release-<version>/`：
+
+```
+paddlex-ocr-web-<ver>-<target>.tar.gz|.zip
+models-paddlex_home-<ver>.tar.gz     # --models-separate 时生成，各平台共用
+SHA256SUMS                           # sha256sum -c 可直接校验
+release-manifest.json                # 平台/依赖/大小/校验值清单
+DEPLOY_ALL.txt                       # 各平台安装命令速查
+```
+
+依赖一致性由脚本主动校验（这些是最常见的离线包失败原因）：
+
+- wheel 的 `cp312` 标签必须与随包 CPython 3.12 一致；`make_offline_bundle.sh` 会在打包前比对；
+- 同一目录**不能混放 CPU 版与 GPU 版 Paddle**（`paddlepaddle-*` 与 `paddlepaddle_gpu-*`），下载脚本会自动清理另一种；
+- macOS / Windows 的 Paddle 固定为 3.3.1，Linux 为 3.4.0，版本差异已写入各自的 `requirements-*.txt`；
+- Windows 目标机需预装 **Microsoft Visual C++ 2015-2022 Redistributable (x64)**，安装脚本会检测并提示；
+- Windows 解压运行时依赖系统自带 `tar.exe`（Win10 1803+ 自带），安装脚本会在缺失时明确报错；
+- 构建机只需要 `python3` + `curl` + `tar`；Windows 的 zip 与 macOS 的 tar.gz 都能在 Linux/macOS 构建机上交叉生成（`--skip-download` 复用已有物料）。
+
 ### 6.1 联网机器：准备离线物料
 
 ```bash
@@ -485,8 +541,8 @@ python3 scripts/download_models.py                  # 不带参数 = 全部产�
 > 临时 `.requirements-*.txt`。
 > 三处共用同一份清单：复制时 `rsync --exclude`、复制后 `find -prune` 兜底、打包时 `tar --exclude`；
 > 生成后还会对**包内清单**做终检——命中任何一条就报错并打印具体路径。
-> 另外 tar 用 `COPYFILE_DISABLE=1 --no-xattrs` 打出，避免 macOS 扩展属性在
-> Windows/Linux 的第三方解压工具里被摊成成百上千个 `._*` 文件。
+> 另外 tar 用 `COPYFILE_DISABLE=1` 打出（同时显式排除 `._*`/`.AppleDouble`），并会探测
+> `--no-xattrs` 是否可用：macOS 的 bsdtar 支持时启用，GNU tar 不支持则自动跳过，避免误报。
 > 想看"到底排除了什么"，先跑 `./scripts/make_offline_bundle.sh ... --dry-run`，
 > 第 1 步会打印「垃圾体检：源目录中有 N 个无关文件，打包时会全部排除」并列出前 15 条。
 
@@ -523,6 +579,11 @@ cd paddlex-ocr-web-1.0.0-arm64
 .venv/bin/python scripts/smoke_test.py            # 默认产线
 .venv/bin/python scripts/smoke_test.py --all      # 四条产线逐条验证（慢，但最完整）
 ```
+
+> **macOS / Windows 目标机**：macOS（Apple Silicon）解压后执行同一条 `./scripts/install_offline.sh`
+>（脚本会自动识别 `macos-arm64`，Paddle 为 3.3.1）；Windows 解压 zip 后执行
+>`powershell -ExecutionPolicy Bypass -File scripts\install_windows.ps1`，再用
+>`scripts\start_windows.ps1` / `scripts\stop_windows.ps1` 启停（详见包内 `DEPLOY_QUICKSTART.txt`）。
 
 安装完成后目录里会多出两样东西（都可安全删除后重装）：
 

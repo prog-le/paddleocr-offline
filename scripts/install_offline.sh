@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 离线安装（在【无外网】的目标服务器上执行）
+# 离线安装（在【无外网】的 Linux / macOS 目标机执行；Windows 用 install_windows.ps1）
 #
 # 目标机不需要预装 python3：离线包内自带可重定位的 CPython 3.12 运行时
-# （offline/python/<arch>/cpython-3.12.*-install_only.tar.gz），本脚本把它解包到
-# <项目>/.runtime/python，用它创建 .venv，再从 offline/wheels/<arch> 离线装依赖。
+# （Linux: offline/python/<arch>/，macOS: offline/python/macos-arm64/），
+# 本脚本把它解包到 <项目>/.runtime/python，用它创建 .venv，再从对应 wheel 目录离线装依赖。
 #
 # 前置：项目目录中已包含
-#   offline/python/<arch>/*.tar.gz     （download_python_runtime.sh 生成）
-#   offline/wheels/<arch>/*.whl        （download_wheels.sh --python 3.12 生成）
+#   offline/python/<target>/*.tar.gz   （download_python_runtime.sh 生成）
+#   offline/wheels/<target>/*.whl      （download_wheels.sh 生成）
 #
 # 用法：
-#   ./scripts/install_offline.sh                    # 用随包运行时（推荐，无需系统 python）
+#   ./scripts/install_offline.sh                    # 自动识别当前平台与 wheel 目录
+#   ./scripts/install_offline.sh --target macos-arm64
 #   ./scripts/install_offline.sh --system-python    # 强制用系统 python3
 #   ./scripts/install_offline.sh --python /usr/bin/python3.12
 #   ./scripts/install_offline.sh --runtime /path/to/cpython-3.12.*-install_only.tar.gz
 #   ./scripts/install_offline.sh --venv /opt/ocr-venv
 #   ./scripts/install_offline.sh --check-only       # 只做环境检查，不安装
 #   ./scripts/install_offline.sh --prepare-only     # 只解包运行时 + 建 venv + 备好 pip
-#   ./scripts/install_offline.sh --device gpu       # 装 paddlepaddle-gpu（仅 amd64）
+#   ./scripts/install_offline.sh --device gpu       # 仅 Linux amd64
 #   ./scripts/install_offline.sh --device gpu --wheels-dir offline/wheels-gpu/amd64
-#                                                  # wheel 不在默认位置时指定（CPU/GPU 轮子
-#                                                  #  分目录存放的常见用法）
 # =============================================================================
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
@@ -34,10 +33,13 @@ FORCE_SYSTEM=0
 RUNTIME_TARBALL_OPT=""
 RT_TAG=""
 DEVICE="auto"          # auto | cpu | gpu（决定装 paddlepaddle 还是 paddlepaddle-gpu）
-WHEELS_DIR_OPT=""      # wheel 目录；默认 offline/wheels/<arch>
+WHEELS_DIR_OPT=""      # wheel 目录；默认按目标平台自动选择
+TARGET_OPT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --target) TARGET_OPT="$2"; shift 2 ;;
+    --target=*) TARGET_OPT="${1#*=}"; shift ;;
     --python) PYTHON_BIN="$2"; shift 2 ;;
     --python=*) PYTHON_BIN="${1#*=}"; shift ;;
     --runtime) RUNTIME_TARBALL_OPT="$2"; shift 2 ;;
@@ -51,29 +53,31 @@ while [ $# -gt 0 ]; do
     --prepare-only) PREPARE_ONLY=1; shift ;;
     --device) DEVICE="$(echo "$2" | tr '[:upper:]' '[:lower:]')"; shift 2 ;;
     --device=*) DEVICE="$(echo "${1#*=}" | tr '[:upper:]' '[:lower:]')"; shift ;;
-    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) die "未知参数：$1" ;;
   esac
 done
 
 print_banner "离线依赖安装"
 
-if [ "$(uname -s)" != "Linux" ] && [ "${PADDLEX_OCR_ALLOW_NONLINUX:-0}" != "1" ]; then
-  warn "本脚本面向 Linux 离线部署，当前系统：$(uname -s)"
-  warn "  * macOS 本地联调请执行：./scripts/install_dev.sh"
-  warn "  * 本脚本只安装 offline/wheels 下的 Linux 轮子，在非 Linux 上必然失败"
-  die "已中止（仅自测时可 set PADDLEX_OCR_ALLOW_NONLINUX=1 绕过系统检查）"
+TARGET="${TARGET_OPT:-$(target_id)}"
+target_supported "$TARGET" || die "$(target_support_note "$TARGET")"
+TARGET_OS="$(target_os "$TARGET")"
+ARCH="$(target_arch_id "$TARGET")"
+[ "$ARCH" != "unknown" ] || die "不支持的 CPU 架构：$(uname -m)"
+if [ "$TARGET_OS" = "windows" ]; then
+  die "Windows 请使用 PowerShell 安装器：powershell -ExecutionPolicy Bypass -File scripts\\install_windows.ps1"
+fi
+if [ "$TARGET_OS" = "macos" ]; then
+  warn "macOS 离线包使用 Paddle 3.3.1（CPU），仅支持 Apple Silicon；Linux 生产部署请用 linux-amd64/linux-arm64"
 fi
 
-ARCH="$(detect_arch)"
-[ "$ARCH" != "unknown" ] || die "不支持的 CPU 架构：$(uname -m)"
-
-# wheel 目录：--wheels-dir 优先（CPU/GPU 轮子分目录存放时的常见用法）
+# wheel 目录：--wheels-dir 优先；否则按目标平台约定自动定位
 if [ -n "$WHEELS_DIR_OPT" ]; then
   WHEELS="$WHEELS_DIR_OPT"
   case "$WHEELS" in /*) ;; *) WHEELS="$PROJECT_ROOT/$WHEELS" ;; esac
 else
-  WHEELS="$PROJECT_ROOT/offline/wheels/$ARCH"
+  WHEELS="$(target_wheels_dir "$TARGET")"
 fi
 
 # 设备变体：auto = 有 paddlepaddle-gpu 轮子就装 GPU 版，否则 CPU 版
@@ -88,6 +92,9 @@ case "$DEVICE" in
   cpu|gpu) ;;
   *) die "--device 只能是 auto / cpu / gpu" ;;
 esac
+if [ "$DEVICE" = "gpu" ] && [ "$TARGET_OS" != "linux" ]; then
+  die "GPU 版仅支持 linux-amd64（Paddle 没有 macOS/Windows GPU 轮子）"
+fi
 if [ "$DEVICE" = "gpu" ] && [ "$ARCH" != "amd64" ]; then
   die "paddlepaddle-gpu 没有 $ARCH 轮子（官方只发 linux_x86_64）。
      ARM 服务器要用 NVIDIA GPU，请改用 NVIDIA NGC 的 paddle 镜像；
@@ -95,17 +102,17 @@ if [ "$DEVICE" = "gpu" ] && [ "$ARCH" != "amd64" ]; then
 fi
 if [ "$DEVICE" = "gpu" ] && ! ls "$WHEELS"/paddlepaddle_gpu-*.whl >/dev/null 2>&1; then
   die "$WHEELS 中没有 paddlepaddle-gpu 轮子。
-     请在联网机器执行：./scripts/download_wheels.sh --arch amd64 --device gpu --cuda cu129 --out offline/wheels-gpu
+     请在联网机器执行：./scripts/download_wheels.sh --os linux --arch amd64 --device gpu --cuda cu129
      若轮子放在别的目录，用 --wheels-dir 指定：
        ./scripts/install_offline.sh --device gpu --wheels-dir offline/wheels-gpu/amd64"
 fi
 
 step "1/6 校验离线 wheel 包"
-[ -d "$WHEELS" ] || die "缺少 $WHEELS —— 请在有外网的机器上执行 scripts/download_wheels.sh --arch $ARCH --python 3.12 后拷贝过来
+[ -d "$WHEELS" ] || die "缺少 $WHEELS —— 请在有外网的机器上执行 scripts/download_wheels.sh --os ${TARGET_OS} --arch ${ARCH} --python 3.12 后拷贝过来
      若 wheel 在自定义目录，用 --wheels-dir 指定（例如 --wheels-dir offline/wheels-gpu/amd64）"
 COUNT="$(find "$WHEELS" -name '*.whl' | wc -l | tr -d ' ')"
 [ "$COUNT" -gt 0 ] || die "$WHEELS 中没有 wheel 文件"
-ok "找到 $COUNT 个 wheel（架构 $ARCH / $(wheel_arch)）"
+ok "找到 $COUNT 个 wheel（目标 $TARGET，wheel 架构 $(wheel_arch "$ARCH")）"
 
 # CPU 版与 GPU 版的轮子文件名不同（paddlepaddle-* / paddlepaddle_gpu-*），
 # 必须按设备分别校验，否则 GPU 目录会被 CPU 版的 glob 判成"缺包"。
@@ -115,14 +122,14 @@ if [ "$DEVICE" = "gpu" ]; then
   if ls "$WHEELS"/paddlepaddle-[0-9]*.whl >/dev/null 2>&1; then
     die "$WHEELS 里同时存在 CPU 版与 GPU 版 Paddle 轮子（装哪个都不对）。
      请重新下载 GPU 轮子（脚本会自动清掉 CPU 版残留）：
-       ./scripts/download_wheels.sh --arch amd64 --device gpu --cuda cu129 --out offline/wheels-gpu"
+       ./scripts/download_wheels.sh --os linux --arch amd64 --device gpu --cuda cu129"
   fi
 else
-  if ! ls "$WHEELS"/paddlepaddle-*.whl >/dev/null 2>&1; then
+  if ! ls "$WHEELS"/paddlepaddle-[0-9]*.whl >/dev/null 2>&1; then
     if ls "$WHEELS"/paddlepaddle_gpu-*.whl >/dev/null 2>&1; then
       die "$WHEELS 里只有 GPU 版 paddlepaddle_gpu 轮子，但当前是 --device cpu。
      装 GPU 版：  ./scripts/install_offline.sh --device gpu
-     要 CPU 版：  ./scripts/download_wheels.sh --arch $ARCH --python 3.12   # 下载 CPU 轮子"
+     要 CPU 版：  ./scripts/download_wheels.sh --os ${TARGET_OS} --arch ${ARCH} --python 3.12"
     fi
     die "缺少 paddlepaddle wheel，请重新下载"
   fi
@@ -170,13 +177,13 @@ elif EXISTING_RT="$(runtime_python)"; then
   ok "复用已解包的随包运行时：$PYTHON_BIN"
 else
   RT_PACK="$RUNTIME_TARBALL_OPT"
-  [ -n "$RT_PACK" ] || RT_PACK="$(runtime_tarball "$ARCH" || true)"
+  [ -n "$RT_PACK" ] || RT_PACK="$(runtime_tarball "$TARGET" || true)"
   if [ -n "$RT_PACK" ] && [ -f "$RT_PACK" ]; then
     if [ "$CHECK_ONLY" -eq 0 ]; then
       extract_runtime "$RT_PACK"
       PYTHON_BIN="$(runtime_python || true)"
     else
-      # 检查模式下不解包（Linux 二进制在本机也未必能跑），按文件名判定版本
+      # 检查模式下不解包（目标平台二进制在本机也未必能跑），按文件名判定版本
       RT_TAG="$(basename "$RT_PACK" | sed -E 's/^cpython-([0-9]+[.][0-9]+)[.].*/\1/')"
       info "检查模式：不解包，按包名判定运行时为 Python ${RT_TAG:-未知}"
       info "          压缩包：$(basename "$RT_PACK")"
@@ -186,11 +193,11 @@ else
   else
     PYTHON_BIN="$(command -v python3 || true)"
     if [ -z "$PYTHON_BIN" ]; then
-      warn "离线包里没有运行时（offline/python/$ARCH/*.tar.gz），系统也没有 python3"
-      die "无法继续。请在联网机器执行 ./scripts/download_python_runtime.sh --arch $ARCH 后重新打包"
+      warn "离线包里没有运行时（$(target_runtime_dir "$TARGET")/*.tar.gz），系统也没有 python3"
+      die "无法继续。请在联网机器执行 ./scripts/download_python_runtime.sh --os ${TARGET_OS} --arch ${ARCH} 后重新打包"
     fi
     warn "未找到随包运行时，退回系统 python3：$PYTHON_BIN"
-    warn "（目标机若没有 python3，请把 offline/python/$ARCH/*.tar.gz 一起打包）"
+    warn "（目标机若没有 python3，请把 $(target_runtime_dir "$TARGET")/*.tar.gz 一起打包）"
   fi
 fi
 
@@ -216,15 +223,16 @@ else
 fi
 case "$PYVER" in
   3.10|3.11|3.12|3.13) ;;
-  *) die "Python $PYVER 不受支持：paddlepaddle 3.4.0 仅提供 cp310~cp313 的 linux wheel" ;;
+  *) die "Python $PYVER 不受支持：离线 wheel/运行时仅提供 cp310~cp313" ;;
 esac
 
 # wheel 的 cp 标签必须与解释器一致，否则离线安装必然失败（常见于下载时版本填错）
 CPTAG="cp${PYVER/./}"
-if ! ls "$WHEELS" 2>/dev/null | grep -q -- "$CPTAG"; then
+WHEEL_NAMES="$(ls -1 "$WHEELS" 2>/dev/null || true)"
+if ! grep -q -- "$CPTAG" <<< "$WHEEL_NAMES"; then
   warn "在 $WHEELS 中没找到 $CPTAG 的 wheel（现有标签：${WHEEL_CPTAG:-未知}）。"
   warn "说明依赖是用别的 Python 版本下载的（例如下载机 --python 3.10，运行时是 3.12）。"
-  warn "解决办法：在有网机器执行  ./scripts/download_wheels.sh --arch $ARCH --python $PYVER  后重新打包。"
+  warn "解决办法：在有网机器执行  ./scripts/download_wheels.sh --os ${TARGET_OS} --arch ${ARCH} --python $PYVER  后重新打包。"
   die "Python 版本与 wheel 不匹配"
 fi
 ok "wheel 的 Python 标签匹配：$CPTAG"
@@ -293,7 +301,9 @@ fi
 step "4/6 安装依赖（完全离线，--no-index，设备 ${DEVICE}）"
 info "pip 将只从 $WHEELS 取包，不访问任何网络"
 export PIP_NO_INDEX=1
-REQ_FILE="$PROJECT_ROOT/requirements.txt"
+REQ_NAME="$(target_requirements "$TARGET")"
+REQ_FILE="$PROJECT_ROOT/$REQ_NAME"
+[ -f "$REQ_FILE" ] || die "离线包缺少 $REQ_NAME"
 GPU_REQ_TMP=""
 if [ "$DEVICE" = "gpu" ]; then
   # requirements.txt 里是 CPU 版 paddlepaddle，必须剔除，否则会和 GPU 版冲突。
@@ -305,7 +315,7 @@ fi
 if ! "$VENV_PY" -m pip install --no-index --find-links "$WHEELS" --disable-pip-version-check \
       -r "$REQ_FILE"; then
   [ -n "$GPU_REQ_TMP" ] && rm -f "$GPU_REQ_TMP"
-  die "离线安装失败。常见原因：wheel 架构不匹配（当前 $(uname -m)）、Python 版本不匹配（${PYVER}）、wheel 缺包"
+  die "离线安装失败。常见原因：wheel 平台不匹配（目标 $TARGET）、Python 版本不匹配（${PYVER}）、wheel 缺包"
 fi
 if [ "$DEVICE" = "gpu" ]; then
   info "安装 GPU 版 Paddle：$(basename "$(ls -1 "$WHEELS"/paddlepaddle_gpu-*.whl | head -1)")"
@@ -394,6 +404,7 @@ EOF
   echo "python_bin=$PYTHON_BIN"
   echo "python_version=$PYVER"
   echo "venv=$VENV_DIR"
+  echo "target=$TARGET"
   echo "arch=$ARCH"
   echo "device=$DEVICE"
   echo "installed_at=$(date '+%Y-%m-%d %H:%M:%S')"
@@ -415,9 +426,9 @@ cat <<EOF
 
 后续步骤：
   1. 确认模型已就位：  ls $(model_home)/official_models
-  2. 环境自检：        ./scripts/preflight.sh
+  2. 环境自检：        ./scripts/preflight.sh          # macOS 上 Linux 专属项会跳过/提示不适用
   3. 启动服务：        ./scripts/start.sh            # 前台运行
                        ./scripts/start.sh --daemon   # 后台运行
-  4. 访问：            http://<服务器IP>:$(config_get server.port 8000)
-  5. 管理后台：        http://<服务器IP>:$(config_get server.port 8000)/admin
+  4. 访问：            http://<本机IP>:$(config_get server.port 8000)
+  5. 管理后台：        http://<本机IP>:$(config_get server.port 8000)/admin
 EOF

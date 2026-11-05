@@ -68,13 +68,13 @@ step "2/8 Python（运行时）"
 PY="$(resolve_python || true)"
 if [ -z "$PY" ]; then
   note_fail "未找到 Python：既没有随包运行时，也没有系统 python3"
-  info "  修复：把 offline/python/$(detect_arch)/*.tar.gz 放进离线包，执行 ./scripts/install_offline.sh"
+  info "  修复：把 offline/python/<target>/ 下的运行时压缩包放进离线包，执行 ./scripts/install_offline.sh"
 else
   info "解释器: $PY"
   VER="$(python_version_of "$PY")"
   case "$VER" in
     3.10|3.11|3.12|3.13) ok "Python $VER" ;;
-    *) note_fail "Python $VER 不受支持，paddlepaddle 3.4.0 仅提供 cp310~cp313 wheel" ;;
+    *) note_fail "Python $VER 不受支持，离线 wheel 仅提供 cp310~cp313" ;;
   esac
 
   # 运行时来源：venv 的 base_prefix 指向 .runtime 即为随包运行时
@@ -86,11 +86,11 @@ else
 
   # 随包运行时压缩包（未解包时提示）
   if runtime_python >/dev/null 2>&1; then :; else
-    RT_PACK="$(runtime_tarball "$(detect_arch)" || true)"
+    RT_PACK="$(runtime_tarball "$(target_id)" || true)"
     if [ -n "$RT_PACK" ]; then
       info "离线包内运行时：$(basename "$RT_PACK")（尚未解包，install_offline.sh 会自动处理）"
     else
-      warn "离线包内没有运行时（offline/python/$(detect_arch)/*.tar.gz）"
+      warn "离线包内没有运行时（$(target_runtime_dir "$(target_id)")/*.tar.gz）"
       warn "  目标机若无 python3 将无法安装：请在联网机器执行 ./scripts/download_python_runtime.sh"
     fi
   fi
@@ -132,8 +132,8 @@ PY
         INFO\|*) info "${line#INFO|}" ;;
       esac
     done <<< "$DEV_LINE"
-    if printf '%s\n' "$DEV_LINE" | grep -q '^FAIL|'; then
-      info "  修复：./scripts/download_wheels.sh --arch amd64 --device gpu --cuda cu129"
+    if grep -q '^FAIL|' <<< "$DEV_LINE"; then
+      info "  修复：./scripts/download_wheels.sh --os linux --arch amd64 --device gpu --cuda cu129"
       info "        ./scripts/install_offline.sh --device gpu  （并确认宿主机 nvidia-smi 正常）"
     fi
   else
@@ -141,7 +141,7 @@ PY
   fi
 
   # wheel 的 cp 标签必须与解释器一致
-  WHEELS_DIR="$PROJECT_ROOT/offline/wheels/$(detect_arch)"
+  WHEELS_DIR="$(target_wheels_dir "$(target_id)")"
   if [ -d "$WHEELS_DIR" ]; then
     TAG="$(ls -1 "$WHEELS_DIR" 2>/dev/null | grep -oE 'cp3[0-9]+' | head -1 || true)"
     if [ -n "$TAG" ]; then
@@ -293,7 +293,12 @@ info "项目所在分区可用: ${DISK_AVAIL} MB"
 step "7/8 端口与离线策略"
 PORT="$(config_get server.port 8000)"
 if command -v ss >/dev/null 2>&1; then
-  ss -ltn 2>/dev/null | grep -q ":$PORT " && warn "端口 $PORT 已被占用" || ok "端口 $PORT 空闲"
+  SS_OUT="$(ss -ltn 2>/dev/null || true)"
+  if grep -q ":$PORT " <<< "$SS_OUT"; then
+    warn "端口 $PORT 已被占用"
+  else
+    ok "端口 $PORT 空闲"
+  fi
 elif command -v lsof >/dev/null 2>&1; then
   lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && warn "端口 $PORT 已被占用" || ok "端口 $PORT 空闲"
 fi
