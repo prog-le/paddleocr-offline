@@ -149,12 +149,14 @@ indra:
   enabled: true
   # 模型目录；留空 = 使用 indra-ocr 自带缓存。
   # 本项目运行期强制离线（HF_HUB_OFFLINE=1），请先在有网机器执行：
+  #   HF_ENDPOINT=https://hf-mirror.com \
   #   INDRA_OCR_MODEL_DIR=models/indra python3 scripts/download_indra_models.py
   # 再把 models/indra 随项目一起拷贝，并把下面改成 models/indra
-  model_dir: ""
+  model_dir: models/indra
   # ONNX Runtime 线程数，0 = 使用 indra-ocr 默认值（4）
   threads: 0
   # 默认关闭：公式转 LaTeX（会显著变慢）
+  # 改成 true 前必须先下载公式模型：python3 scripts/download_indra_models.py --math
   math: false
   # 默认关闭：保留页眉/页脚/页码块（开启后导出内容更杂）
   keep_furniture: false

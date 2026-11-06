@@ -139,7 +139,8 @@ paddlex-ocr-web/
 ├── models/
 │   ├── README.md                    # 模型目录说明与校验方法
 │   ├── manifest.json                # （生成）模型清单
-│   └── paddlex_home/official_models/  # 模型权重落盘位置
+│   ├── paddlex_home/official_models/  # PaddleX 模型权重落盘位置
+│   └── indra/                       # （可选）Indra OCR 权重落盘位置
 ├── offline/
 │   ├── wheels/
 │   │   ├── amd64/                   # x86_64 的 cp312 wheel
@@ -246,9 +247,19 @@ paddlex-ocr-web/
 > ```bash
 > pip install -r requirements-indra.txt   # 或 pip install indra-ocr
 > ```
-> 模型默认从 Hugging Face 下载（约 76 MB），但本项目运行期强制离线，请先在联网机器执行
-> `python3 scripts/download_indra_models.py`，再把 `models/indra` 拷走并设置
-> `indra.model_dir: models/indra`。未安装时该产线完全不可见，PaddleX 产线不受影响。
+> 模型权重来自 Hugging Face 仓库 `datalab-to/indra-ocr`（tag `v1.1.0`，约 73 MB）。
+> 本项目运行期强制离线（`HF_HUB_OFFLINE=1`），**必须先在联网机器下载**：
+> ```bash
+> python3 scripts/download_indra_models.py                                     # 下到 models/indra
+> HF_ENDPOINT=https://hf-mirror.com python3 scripts/download_indra_models.py   # 国内网络（HF 直连不通时）
+> python3 scripts/download_indra_models.py --math                              # 额外下公式识别模型
+> ```
+> 脚本直接拉取 HF 仓库快照（`det/rec/order*.onnx` + `meta.json` 等）到 `models/indra`，
+> 下载后再用 `indra_ocr.load(path=…)` 校验一遍。
+> **不要指望 `indra_ocr.load(path=…)` 去下载**——它只校验目标目录，缺文件直接抛 `ModelError`。
+> 默认不含公式模型（约 73 MB）；要开 `indra.math: true` 必须加 `--math` 重新下载（合计约 92 MB）。
+> 下载完把 `models/indra` 拷走，并设置 `indra.model_dir: models/indra`。
+> 未安装 `indra-ocr` 时该产线完全不可见，PaddleX 产线不受影响。
 > 模型权重遵循 OpenRAIL-M，商业使用前请确认许可。
 
 #### 纯文字识别已升级到 PP-OCRv6
@@ -449,6 +460,7 @@ PaddlePaddle 至今没有 Metal/MPS 后端（`paddle.device.is_compiled_with_cud
 | 管理后台 | `http://IP:8000/admin` | — |
 | 管理员账号 | `admin` / `PaddleX@2026` | `server.admin_username/admin_password`、`PADDLEX_OCR_ADMIN_PASSWORD`、compose 的 `ADMIN_PASSWORD` |
 | 模型目录 | `models/paddlex_home/official_models` | `PADDLEX_OCR_MODEL_HOME` |
+| Indra 模型目录 | `models/indra`（可选产线） | `config.yaml` 的 `indra.model_dir` 或 `INDRA_OCR_MODEL_DIR` |
 | 数据目录 | `data/`（任务、结果、导出缓存） | `storage.data_dir`、`PADDLEX_OCR_DATA_DIR` |
 | 日志 | `logs/app.log`、`logs/server.log`、`data/tasks/<id>/task.log` | `storage.log_dir`、`PADDLEX_OCR_LOG_DIR` |
 | 依赖 wheel | `offline/wheels/amd64`、`offline/wheels/arm64` | — |
@@ -476,7 +488,14 @@ conda activate ocr
 pip install "paddlex[ocr]==3.7.2" paddlepaddle==3.3.1 \
             fastapi uvicorn python-multipart PyYAML==6.0.2 Pillow \
             pypdfium2 PyMuPDF python-docx openpyxl psutil
+
+# 方式四：复用已有环境但不建 venv（项目根目录写一个 .venv_path 指向解释器即可）
+echo "/path/to/conda/envs/ocr" > .venv_path
 ```
+
+> **不想新建 venv？** 在项目根目录放一个 `.venv_path`（内容是解释器绝对路径，一行即可），
+> `scripts/start.sh` / `preflight.sh` 会优先用它，省掉重装 paddlepaddle（macOS 轮子只有 3.3.1）。
+> 该文件已在 `.gitignore` 中，不会被提交。
 
 启动并验证：
 
@@ -503,6 +522,38 @@ PADDLEX_OCR_PIPELINE=OCR ./scripts/start.sh --port 8000
 | 看接口文档（离线 Swagger） | <http://127.0.0.1:8000/api/docs>（原始 spec：`/api/openapi.json`） |
 | 本地离线部署 | 见 [§6](#6-本地离线部署步骤) |
 | Docker 离线部署 | 见 [§7](#7-docker-离线部署步骤) |
+
+### 5.2 可选产线（pdf-inspector / Indra OCR）在开发机上的启用
+
+这两条产线是**可选依赖**：装上包 + 备好权重才会出现在下拉框里，未装时 PaddleX 产线完全不受影响。
+
+```bash
+# 1) 装可选依赖（开发机直接 pip 即可）
+pip install -r requirements-pdf-inspector.txt     # pdf-inspector：纯 Rust wheel，无模型
+pip install -r requirements-indra.txt              # indra-ocr：ONNX Runtime + 约 73 MB 权重
+
+# 2) 准备权重（仅 Indra 需要；pdf-inspector 不需要任何模型文件）
+python3 scripts/download_indra_models.py                                     # → models/indra
+HF_ENDPOINT=https://hf-mirror.com python3 scripts/download_indra_models.py   # HF 直连不通时加镜像
+python3 scripts/download_indra_models.py --math                              # 要开公式识别时加这个
+
+# 3) 让服务用上本地权重（相对路径按项目根解析）
+#    config/config.yaml
+#    indra:
+#      enabled: true
+#      model_dir: models/indra
+
+# 4) 重启后确认产线已注册
+curl -s localhost:8000/api/meta | python3 -c "import sys,json;print([p['id'] for p in json.load(sys.stdin)['pipelines']])"
+#    期望：['OCR', 'PDFINSPECTOR', 'PP-StructureV3', 'PP-StructureV3-full', 'table_recognition_v2', 'INDRA']
+```
+
+> **下拉框里看不到 `INDRA`？** 说明 `indra-ocr` 没装成功（不是模型问题）——
+> `backend/pipelines.py` 会跳过注册并在日志里写「已启用 Indra OCR，但未安装 indra-ocr」。
+> 装好后**重启**服务即可。`PDFINSPECTOR` 同理（缺 `pdf-inspector` 包时不注册）。
+>
+> **智能选择里也没有 `INDRA`？** 智能路由的「扫描件 → Indra」规则依赖 `INDRA` 产线已注册，
+> 产线缺失时该规则自动失效并回退到默认产线——所以先解决上面那一步。
 
 ---
 
@@ -590,17 +641,18 @@ python3 -V && uname -m
 # 3) 下载模型（这一步需要本机能跑 paddlex，会真实推理一次做验证）
 #    GPU 机器上同样执行：模型与设备无关，CPU/GPU 共用同一份权重
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
-python3 scripts/download_models.py                  # 不带参数 = 全部产线（约 2.3 GB）
+python3 scripts/download_models.py                  # 不带参数 = 全部产线（约 2.9 GB / 21 个模型）
 #    或按需单条：
 #    python3 scripts/download_models.py --config config/pipelines/PP-StructureV3.yaml
 #    python3 scripts/download_models.py --config config/pipelines/PP-StructureV3-full.yaml
 #    python3 scripts/download_models.py --config config/pipelines/table_recognition_v2.yaml
 #    python3 scripts/download_models.py --config config/pipelines/OCR.yaml   # PP-OCRv6
 #    python3 scripts/download_models.py --pipelines OCR                     # 官方内置 OCR
+#    只重建清单（不下载）：python3 scripts/download_models.py --manifest-only
 #    可选 Indra OCR 模型（需先 pip install -r requirements-indra.txt）：
 #    python3 scripts/download_indra_models.py
-#    个别模型（如 PP-DocBlockLayout）BOS 源缺失，可切源：
-#    PADDLE_PDX_MODEL_SOURCE=ModelScope python3 scripts/download_models.py --config ...
+#    HF 直连不通时加镜像：HF_ENDPOINT=https://hf-mirror.com python3 scripts/download_indra_models.py
+#    模型源可切换：PADDLE_PDX_MODEL_SOURCE=ModelScope python3 scripts/download_models.py --config ...
 
 # 4) 打整包（代码 + 运行时 + wheel + 模型 + 脚本）
 ./scripts/make_offline_bundle.sh --arch arm64       # 或 amd64
@@ -623,8 +675,11 @@ python3 scripts/download_models.py                  # 不带参数 = 全部产�
 > 第 1 步会打印「垃圾体检：源目录中有 N 个无关文件，打包时会全部排除」并列出前 15 条。
 
 > **关于 `config/pipelines/PP-StructureV3.yaml`**：这是官方产线配置的副本，唯一差异是
-> `use_region_detection: False`。原因：该开关会额外加载 `PP-DocBlockLayout`，而该模型在
-> 官方 BOS 源上无法下载，且它只影响"区域二次切分"，关闭后表格识别与阅读顺序不受影响。
+> `use_region_detection: False`。该开关会额外加载 `PP-DocBlockLayout` 做"区域二次切分"，
+> 关闭后表格识别与阅读顺序不受影响，只是少一层区域切分（换来的收益是更小的显存与更快的加载）。
+> 若要开启，把 yaml 里的开关改回 `True` 再执行
+> `python3 scripts/download_models.py --config config/pipelines/PP-StructureV3.yaml` 补齐权重即可
+> （`PP-DocBlockLayout` 在官方 BOS 源上现可下载，2026-11 实测可用）。
 > 引擎会自动优先使用 `config/pipelines/<产线名>.yaml`（可用 `ocr.pipeline_config` 指定其它路径）。
 > 模型清单与各模型用途见 `models/README.md`。
 
@@ -653,8 +708,14 @@ cd paddlex-ocr-web-1.0.0-arm64
 
 # 4) 端到端自检（真实推理 + 四种导出，最可靠）
 .venv/bin/python scripts/smoke_test.py            # 默认产线
-.venv/bin/python scripts/smoke_test.py --all      # 四条产线逐条验证（慢，但最完整）
+.venv/bin/python scripts/smoke_test.py --all      # 全部已注册产线逐条验证（慢，但最完整）
+.venv/bin/python scripts/smoke_test.py --mock --all   # 同上但不加载模型（秒级，验证链路）
 ```
+
+> `--all` 会按产线逐条加载 / 推理 / 导出 / 卸载，因此**同时只驻留一套模型**。
+> 自检脚本与服务端共用同一套引擎分发逻辑（`backend/engine_pool.py`）：
+> `PDFINSPECTOR` 走 `predict_pdf()`（自检时会自动生成一份带文本层的样例 PDF，
+> 因为该产线只抽 PDF 文本层、不做 OCR），`INDRA` 与 PaddleX 产线走 `predict_page()`。
 
 > **macOS / Windows 目标机**：macOS（Apple Silicon）解压后执行同一条 `./scripts/install_offline.sh`
 >（脚本会自动识别 `macos-arm64`，Paddle 为 3.3.1）；Windows 解压 zip 后执行
@@ -775,7 +836,7 @@ sudo journalctl -u paddlex-ocr-web -f
 | `ocr.warmup_on_start` | `true` | 启动后后台预热默认产线（首次加载 20~90 秒） |
 | `ocr.defaults.*` | 见文件 | 识别阈值与子模块开关（前端可临时覆盖，并受参数白名单/范围约束） |
 | `indra.enabled` | `true` | 是否启用 Indra OCR 产线（需已安装 `indra-ocr`，改完重启生效） |
-| `indra.model_dir` | `""` | Indra 模型目录；留空用包内缓存，离线部署建议 `models/indra` |
+| `indra.model_dir` | `""` | Indra 模型目录；留空用包内缓存，离线部署建议 `models/indra`（相对路径按项目根解析） |
 | `pdf_inspector.enabled` | `true` | 是否启用 PDF Inspector 产线（需已安装 `pdf-inspector`，改完重启生效；纯 Rust wheel，无模型/GPU/OCR runtime） |
 | `indra.threads` | `0` | ONNX Runtime 线程数，0=使用 indra-ocr 默认值（4） |
 | `indra.math` / `indra.keep_furniture` | `false` | 公式转 LaTeX / 保留页眉页脚默认值（前端可临时覆盖） |
@@ -802,7 +863,7 @@ sudo journalctl -u paddlex-ocr-web -f
 | `PADDLEX_OCR_TEXT_REC_BATCH` / `PADDLEX_OCR_TIER` / `PADDLEX_OCR_CONCURRENCY` / `PADDLEX_OCR_PDF_DPI` | 识别 batch、OCR 档位、并发、渲染 DPI |
 | `PADDLEX_OCR_PIPELINE` / `PADDLEX_OCR_AUTO_PIPELINE` | 默认产线与智能选择开关 |
 | `PADDLEX_OCR_MAX_UPLOAD_MB` / `PADDLEX_OCR_RETENTION_HOURS` | 上传上限与结果保留期 |
-| `PADDLEX_OCR_INDRA_ENABLED` / `PADDLEX_OCR_INDRA_MODEL_DIR` / `PADDLEX_OCR_INDRA_THREADS` | Indra 产线 |
+| `PADDLEX_OCR_INDRA_ENABLED` / `PADDLEX_OCR_INDRA_MODEL_DIR` / `PADDLEX_OCR_INDRA_THREADS` | Indra 产线（`INDRA_OCR_MODEL_DIR` 同义，优先级更高） |
 | `PADDLEX_OCR_PDF_INSPECTOR_ENABLED` | pdf-inspector 产线开关 |
 | `PADDLEX_OCR_MOCK` | `1` 时启用 MOCK 引擎（不加载模型，联调/自检用） |
 
@@ -1332,6 +1393,13 @@ OCR 的文本结果，不会出现空白页。
 **Q17：如何彻底清空历史？**
 停服后删除 `data/tasks/*`、`data/exports/*`；或后台点「清理过期任务」。
 
+**Q18：下拉框里没有 `INDRA` / `PDFINSPECTOR`？「智能选择」也不走 Indra？**
+这两条是**可选产线**，需要先装包（`pip install -r requirements-indra.txt` /
+`requirements-pdf-inspector.txt`）再重启服务；缺包时 `backend/pipelines.py` 直接跳过注册，
+日志会写「已启用 Indra OCR，但未安装 indra-ocr」。智能选择里的「扫描件 → Indra」规则
+依赖 `INDRA` 已注册，产线缺失时该规则自动失效并回退默认产线——这是设计行为。
+完整的启用步骤（含模型准备）见 §5.2。
+
 ---
 
 ## 11. 安全与合规提示
@@ -1362,7 +1430,7 @@ OCR 的文本结果，不会出现空白页。
 | 2 | **wheel 的 Python 版本与目标机一致** | 文件名里的 `cp310`/`cp312` 必须匹配目标机 `python3 -V`。不一致会在安装时报 `Python 版本与 wheel 不匹配`（脚本已做拦截） |
 | 3 | **随包运行时齐全** | `./scripts/verify_runtime.sh` 全绿（sha256 / ELF 架构 / GLIBC ≤ 2.17）；`offline/python/<arch>/*.tar.gz` 存在（arm64 51 MB / amd64 65 MB） |
 | 4 | **运行时与 wheel 同版本** | 运行时 3.12 ↔ wheel 标签 `cp312`；不一致时打包脚本会告警，安装脚本会直接拦截 |
-| 5 | **模型齐全** | `python3 scripts/download_models.py --manifest-only` 重建清单；四条产线合计 17 个模型 / 约 2.3 GB |
+| 5 | **模型齐全** | `python3 scripts/download_models.py --manifest-only` 重建清单；四条产线合计 21 个模型 / 约 2.9 GB |
 | 6 | **打包干跑** | `./scripts/make_offline_bundle.sh --arch <arch> --dry-run` 先看计划 |
 | 7 | **正式打包** | `./scripts/make_offline_bundle.sh --arch <arch>`，末尾会自检包内必需文件（缺一个就报错退出） |
 | 8 | 包内不含垃圾 | 脚本已排除 `.DS_Store` / `__pycache__` / `*.pyc` / `models/*/locks` / `data` / `logs` |
@@ -1391,12 +1459,14 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 > `libcuda.so.1` 失败——脚本会降级为 `WARN` 并继续（打包机属正常），CUDA 能力检测留到带卡机器做。
 
 `smoke_test.py` 输出「自检全部通过」即代表：产线可加载、能推理、docx/xlsx/txt/md 都能生成并回读。
-想四条产线都验证一遍（会更慢，模型逐条加载再释放）：
+想把全部产线都验证一遍（会更慢，模型逐条加载再释放）：
 
 ```bash
 .venv/bin/python scripts/smoke_test.py --all
 # 只验某一条：
 .venv/bin/python scripts/smoke_test.py --pipeline table_recognition_v2
+# 不加载模型，只验链路：
+.venv/bin/python scripts/smoke_test.py --mock --all
 ```
 
 ### 12.3 资源与端口
@@ -1404,7 +1474,7 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 | 项目 | 建议 | 说明 |
 | --- | --- | --- |
 | 内存 | ≥ 8 GB（单产线）；混用多条 ≥ 12 GB（四条全用 ≥ 16 GB） | 精简版约 2~3 GB，完整版约 3~4 GB，表格产线约 2~3 GB；后台「服务控制 → 卸载」可释放。**Docker 还需 `MEM_LIMIT` 不低于这些值**（默认 8g） |
-| 磁盘 | ≥ 20 GB（GPU 版 ≥ 30 GB） | 依赖（装好约 1.5~2 GB）+ 运行时 0.2 GB + 模型 2.3 GB + 运行期 data；GPU 离线包另占约 9 GB（构建/分发用，装好后约 7 GB） |
+| 磁盘 | ≥ 20 GB（GPU 版 ≥ 30 GB） | 依赖（装好约 1.5~2 GB）+ 运行时 0.2 GB + 模型 2.9 GB + 运行期 data；GPU 离线包另占约 9 GB（构建/分发用，装好后约 7 GB） |
 | GPU 显存 | ≥ 8 GB（建议 12 GB+） | `PP-StructureV3` 单页峰值约 2~4 GB；`OCR` 约 1~2 GB；多实例按倍数累加 |
 | CPU | 4 核起，8 核更稳 | 推理是纯 CPU 计算，线程数由 Paddle 自管 |
 | 端口 | 8000（可改 `server.port`） | 内网访问，建议防火墙限制来源网段 |
@@ -1424,7 +1494,7 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 | 任务第 1 页就失败：`UnboundLocalError: ... 'page_mem'` | 1.0.0 老包 `manager._run()` 的 `page_mem` 只在 CPU 分支赋值，**GPU 机器上每页都失败**（CPU/MOCK 测不到） | 用 `dist/hotfix-1.0.0-patches.tar.gz` 覆盖 `backend/` 后重启；新整包已修复 |
 | 报 `缺少随包运行时` / `系统也没有 python3` | 打包时漏了 `offline/python/<arch>` | 联网机执行 `./scripts/download_python_runtime.sh --arch <arch>` 后重新打包 |
 | 启动报 `No module named fastapi` | 没跑 `install_offline.sh`，或跑了但用系统 python 启动 | 用 `scripts/start.sh`（会自动用 `.venv`） |
-| `status.sh` 一直 503 | 模型目录为空 / 产线加载失败 | 看 `logs/app.log`；后台「模型清单」应为 17 个 |
+| `status.sh` 一直 503 | 模型目录为空 / 产线加载失败 | 看 `logs/app.log`；后台「模型清单」应为 21 个 |
 | 识别很慢或超时 | 密集扫描件 120 s/页很常见 | 调大 `limits.task_timeout_sec`，或降 `pdf_dpi`，或换 `OCR` 产线 |
 | 有 GPU 但仍走 CPU | 装的是 CPU 版 paddle / 容器没加 `--gpus` / 没重载 | 见 §10 Q11.5 |
 | GPU 任务报 CUDA OOM | batch 过大或多实例抢显存 | 调小 `ocr.text_rec_batch_size`、`concurrency=1`、`gpu_mem_fraction` |
@@ -1451,7 +1521,7 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 | 结果归一化单测 | `python3 tests/test_engine_utils.py` | PaddleX 结果外层包装解包、OCR 段落聚类、版面块映射、**表格产线 `pred_html`→网格（含 rowspan/colspan、无表格退回 OCR）**（21 项） | 否 |
 | 端到端接口测试 | `bash tests/e2e.sh` | 上传（图片+多页 PDF）→ 队列/进度 → 结果结构 → 四种导出 → 后台登录/概览/日志 → 在线改配置 → **设备/档位/批处理切换** → 限额 413 → 暂停/恢复 → 删除 → **会话隔离** → 异常文件拒绝 | 否（MOCK 引擎） |
 | 离线自检（默认产线） | `.venv/bin/python scripts/smoke_test.py` | 产线加载 + 真实推理 + 四格式导出 + docx/xlsx 回读 | **是** |
-| 离线自检（指定/全部产线） | `... smoke_test.py --pipeline table_recognition_v2` / `--all` | 逐条产线跑同一套加载/推理/导出/回读；`--all` 会在产线间自动卸载释放内存 | **是** |
+| 离线自检（指定/全部产线） | `... smoke_test.py --pipeline table_recognition_v2` / `--all` | 逐条产线跑同一套加载/推理/导出/回读（含可选的 `PDFINSPECTOR` / `INDRA`，PDF 产线会自动生成带文本层的样例 PDF）；`--all` 会在产线间自动卸载释放内存 | **是** |
 | 仅测 Web 链路 | `.venv/bin/python scripts/smoke_test.py --mock --all` | 同上但不加载模型（秒级） | 否 |
 
 `tests/e2e.sh` 会在 8123 端口拉起一个 MOCK 服务（使用临时数据目录，不污染 `data/`），
@@ -1479,7 +1549,7 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 | 项目 | 结果 |
 | --- | --- |
 | 环境 | macOS arm64 / Python 3.12 / `paddlepaddle 3.3.1` / `paddlex 3.7.2` / CPU |
-| 模型 | 17 个，约 2.36 GB（四条产线共用大部分权重；含 PP-OCRv5 与 PP-OCRv6 各一套 OCR 权重） |
+| 模型 | 21 个，约 2.9 GB（四条产线共用大部分权重；含 PP-OCRv5 与 PP-OCRv6 各一套 OCR 权重） |
 | 产线加载 | 7~9 秒 |
 | 输入 | A4 报价单 PDF（含 5 处合并单元格的 6×7 表格）、2 页 PDF、PNG 截图 |
 | 表格还原 | 6×7；合并位置 `(0,0,2,1) (0,1,1,3) (0,4,2,1) (0,5,1,2) (5,0,1,4)` 与样张一致 |
@@ -1493,7 +1563,7 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 | 项目 | 结果 |
 | --- | --- |
 | 环境 | 同上（macOS arm64 / Python 3.12 / `paddlex 3.7.2` / CPU） |
-| 模型 | 与精简版共用，仅新增 `SLANeXt_wireless`；全库 **17 个 / 2.3 GB** |
+| 模型 | 与精简版共用，仅新增 `SLANeXt_wireless`；全库 **21 个 / 2.9 GB** |
 | 产线加载 | 首次 ~11 s（含表格方向分类/结构识别/单元格检测） |
 | 输入 | 同一份 A4 报价单 PDF（6×7 表格，5 处合并单元格） |
 | 表格还原 | 6×7；合并位置 `(0,0,2,1) (0,1,1,3) (0,4,2,1) (0,5,1,2) (5,0,1,4)`，与样张**完全一致** |
@@ -1503,6 +1573,29 @@ tar xzf paddlex-ocr-web-1.0.0-<arch>.tar.gz && cd paddlex-ocr-web-1.0.0-<arch>
 
 **已知限制**：跨度特别大的合并行（例如 5 列并为 1 格）有概率少并 1 列，
 内容不丢失，导出 Excel 后手动合并一格即可；如需完全精确，可调大 `pdf_dpi` 后重识别。
+
+### 真实产线验收记录（可选产线：PDF Inspector / Indra OCR）
+
+| 项目 | PDFINSPECTOR | INDRA |
+| --- | --- | --- |
+| 环境 | macOS arm64 / Python 3.12 / `pdf-inspector 1.25.2`（Rust wheel，无模型） | macOS arm64 / Python 3.12 / `indra-ocr 1.1.2`（ONNX Runtime，CPU） |
+| 权重 | 无 | `models/indra` 14 个文件 / 约 73 MB（HF `datalab-to/indra-ocr@v1.1.0`） |
+| 产线加载 | 0.0 s | 0.5 s |
+| 输入 | 带原生文本层的样例 PDF（自检脚本自动生成） | A4 报价单 PNG |
+| 输出 | 3 个块（含 1 个表格），4~10 ms | 6 个块（含 1 个表格），144 ms |
+| 导出 | txt/md/docx/xlsx 均可生成并回读（xlsx 工作表 `全文` + `表1`） | 同左 |
+| 限制 | 只吃完整 PDF，只抽文本层；扫描页不自动 OCR | 不做单元格级表格还原 |
+
+**智能选择的实测路由**（2026-11，macOS arm64）：
+
+| 输入 | 探测结果 | 选中产线 | 理由字段 |
+| --- | --- | --- | --- |
+| 纯图片 PDF（无文本层） | `image_based` | `INDRA` | 扫描件，Indra OCR 轻量 CPU 模型 |
+| 带原生文本的 PDF | `text_based` | `PDFINSPECTOR` | 原生文本 PDF，Rust 快抽秒级处理 |
+| 图片（PNG/JPG） | 非 PDF | 默认产线 | 不做 PDF 分类 |
+
+> `INDRA` 产线在未安装 `indra-ocr` 时不会注册，此时「扫描件 → Indra」规则自动失效，
+> 智能选择回退到默认产线——这是设计行为，不是故障。详见 §5.2。
 
 ---
 

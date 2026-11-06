@@ -2,7 +2,7 @@
 
 ## 为什么模型不放进 Git 仓库
 
-PaddleX 官方模型（PP-StructureV3 全套约 1.5~2.5 GB）体积大且是二进制权重，不适合进版本库。正确做法：
+PaddleX 官方模型（四条产线全套约 2.9 GB / 21 个模型）体积大且是二进制权重，不适合进版本库。正确做法：
 
 1. 在**有外网**的机器上执行 `python3 scripts/download_models.py`
 2. 脚本把权重落到 `models/paddlex_home/official_models/<模型名>/`
@@ -16,6 +16,7 @@ PaddleX 官方模型（PP-StructureV3 全套约 1.5~2.5 GB）体积大且是二�
 ```
 models/
 ├── manifest.json                     # download_models.py 生成（名称/大小/摘要）
+├── indra/                            # （可选）Indra OCR 权重，约 73 MB
 └── paddlex_home/                     # 等价于 PADDLE_PDX_CACHE_HOME
     └── official_models/
         ├── PP-DocLayout_plus-L/
@@ -36,22 +37,23 @@ python3 scripts/download_models.py --config config/pipelines/OCR.yaml
 python3 scripts/download_models.py --config config/pipelines/PP-StructureV3.yaml
 
 # 3) 通用版面解析 v3（完整：区域检测 + 印章，共用大部分模型，增量约 150 MB）
-#    注意：PP-DocBlockLayout 在官方 BOS 源缺失，需要切 ModelScope 源
-PADDLE_PDX_MODEL_SOURCE=ModelScope \
-  python3 scripts/download_models.py --config config/pipelines/PP-StructureV3-full.yaml
+#    注意：PP-DocBlockLayout 在官方 BOS 源现可下载（2026-11 实测），无需切源
+python3 scripts/download_models.py --config config/pipelines/PP-StructureV3-full.yaml
 
 # 4) 通用表格识别（专用表格产线；与上面共用版面/OCR/单元格检测，仅新增 SLANeXt_wireless）
 python3 scripts/download_models.py --config config/pipelines/table_recognition_v2.yaml
 ```
 
-四条产线全下 = **17 个模型 / 约 2.36 GB**（含 PP-OCRv5 与 PP-OCRv6 各一套 OCR 权重）。已下过的模型会自动跳过。
+四条产线全下 = **21 个模型 / 约 2.9 GB**（含 PP-OCRv5 与 PP-OCRv6 各一套 OCR 权重）。已下过的模型会自动跳过。
+清单可用 `python3 scripts/download_models.py --manifest-only` 单独重建（只扫目录，不下载）。
 
 > **PP-OCRv6 三档任选其一即可**，不必全下：
 > `PP-OCRv6_medium_det` + `medium_rec`（133 MB）/ `small`（30 MB）/ `tiny`（6 MB）。
 > 档位由 `ocr.ocr_tier` 决定，引擎会在建模时把两个 `model_name` 覆盖成对应档位。
 
 > 模型源可选 `BOS`（默认）/ `ModelScope` / `HuggingFace` / `AIStudio`。
-> 国内内网环境推荐 `ModelScope`：BOS 缺少个别新模型（实测 `PP-DocBlockLayout`）。
+> 默认的 BOS 源在 2026-11 实测可覆盖本项目全部模型（含 `PP-DocBlockLayout`）；
+> 若目标网络访问 BOS 不畅，再切 `PADDLE_PDX_MODEL_SOURCE=ModelScope`。
 
 ## 纯文字识别（PP-OCRv6）需要的模型
 
@@ -80,7 +82,7 @@ python3 scripts/download_models.py --config config/pipelines/table_recognition_v
 | --- | --- | --- |
 | 版面区域检测 | `PP-DocLayout_plus-L` | 标题/段落/表格/图片区域 |
 | 版面块检测 | `PP-DocBlockLayout` | 阅读顺序相关块 |
-| 区域检测（完整版） | `PP-DocBlockLayout` | 仅 `use_region_detection=true`；BOS 源缺失，需 ModelScope |
+| 区域检测（完整版） | `PP-DocBlockLayout` | 仅 `use_region_detection=true`；本项目默认关闭该开关以省显存与时间 |
 | 图表转表格 | `PP-Chart2Table` | 仅 `use_chart_recognition=true`；约 2.2 GB，默认不启用 |
 | 文档方向 | `PP-LCNet_x1_0_doc_ori` | 仅 `use_doc_orientation_classify=true` |
 | 文档矫正 | `UVDoc` | 仅 `use_doc_unwarping=true` |
@@ -127,14 +129,26 @@ python3 scripts/download_models.py --config config/pipelines/PP-StructureV3.yaml
 
 ## Indra OCR（可选产线）需要的模型
 
-Indra OCR 的权重不在 PaddleX 缓存里，默认由 `indra-ocr` 自己下载（约 76 MB）：
+Indra OCR 的权重不在 PaddleX 缓存里，来自 Hugging Face 仓库 `datalab-to/indra-ocr`
+（tag `v1.1.0`，`det/rec/order*.onnx` + `meta.json` 等约 73 MB）：
 
 ```bash
 # 有外网机器，先安装可选依赖
 pip install -r requirements-indra.txt
 # 下载到 models/indra（可用 INDRA_OCR_MODEL_DIR 覆盖输出目录）
 python3 scripts/download_indra_models.py
+# huggingface.co 直连不通时改用镜像
+HF_ENDPOINT=https://hf-mirror.com python3 scripts/download_indra_models.py
+# 需要公式识别（config.yaml 的 indra.math: true）时加 --math
+python3 scripts/download_indra_models.py --math
 ```
+
+> 默认下载约 73 MB（不含公式模型）；`--math` 会额外拉 5 个公式文件，合计约 92 MB。
+> 离线环境开 `indra.math: true` 前必须先 `--math` 下载，否则加载产线会报缺少 math 模型。
+
+> 脚本直接拉取 HF 仓库快照到目标目录，再用 `indra_ocr.load(path=…)` 校验一遍。
+> **不要直接调 `indra_ocr.load(path=…)` 来下载**——它只检查目录里有没有权重，缺文件直接抛
+> `ModelError`，永远不会往你给的路径里下载。
 
 下载完成后把 `models/indra` 一起拷到离线服务器，并在 `config/config.yaml` 设置：
 
@@ -167,6 +181,7 @@ GPU 版只影响 Paddle 运行时（`paddlepaddle-gpu` 轮子 3.35 GB + `nvidia-
 
 ```bash
 ls models/paddlex_home/official_models     # 目录清单
+ls models/indra                            # （可选）Indra 权重
 cat models/manifest.json                   # 名称/大小/摘要
 ./scripts/preflight.sh                     # 环境 + 模型 + 端口
 .venv/bin/python scripts/smoke_test.py     # 真推理 + 四种导出（最可靠）

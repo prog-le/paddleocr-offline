@@ -251,6 +251,12 @@ class IndraEngine:
         math, furniture = key
         kwargs: Dict[str, Any] = {"math": math, "furniture": furniture}
         if self.model_dir is not None:
+            if not self.model_dir.exists():
+                raise EngineError(
+                    f"Indra 模型目录不存在：{self.model_dir}。"
+                    "请在联网机器执行 scripts/download_indra_models.py 后把权重拷过来，"
+                    "或把 indra.model_dir 留空以使用包内缓存。"
+                )
             kwargs["path"] = str(self.model_dir)
         try:
             threads = int(self.settings.get("indra.threads", 0) or 0)

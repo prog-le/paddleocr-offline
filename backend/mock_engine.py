@@ -112,3 +112,27 @@ class MockEngine:
             raw={"mock": True, "page": page_no, "params": params},
             elapsed_ms=int((time.time() - started) * 1000),
         )
+
+    def predict_pdf(self, pdf_path: Path, params: Dict[str, Any]) -> PageResult:
+        """PDF 快抽产线的模拟实现（与 pdf_inspector 的产物形态一致：整份文档一块内容）。"""
+        self._predict_count += 1
+        started = time.time()
+        time.sleep(0.05)
+
+        blocks = [
+            Block(type="title", label="doc_title", bbox=[0, 0, 0, 0],
+                  text="离线 OCR / PDF 快抽自检文档（MOCK 模式）", order=1),
+            Block(type="text", label="text", bbox=[0, 0, 0, 0],
+                  text=(
+                      f"这是 {pdf_path.name} 的模拟抽取结果，用于验证 PDF 产线的"
+                      "任务队列、结果预览与四种格式导出链路是否正常。"
+                  ),
+                  order=2),
+        ]
+        return PageResult(
+            blocks=blocks,
+            width=0,
+            height=0,
+            raw={"mock": True, "pdf": pdf_path.name, "params": params},
+            elapsed_ms=int((time.time() - started) * 1000),
+        )

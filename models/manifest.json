@@ -1,25 +1,31 @@
 {
-  "generated_at": "2026-10-23 06:44:53",
+  "generated_at": "2026-11-06 11:20:28",
   "paddle": "3.3.1",
   "paddlex": "3.7.2",
   "device": "cpu",
-  "pipelines": [
-    "OCR",
-    "PP-StructureV3-full",
-    "PP-StructureV3",
-    "table_recognition_v2",
-    "OCR"
-  ],
+  "pipelines": [],
   "pipeline_config": null,
   "model_home": "models/paddlex_home",
-  "model_count": 17,
-  "total_mb": 2356.1,
+  "model_count": 21,
+  "total_mb": 2895.9,
   "models": [
     {
       "name": "PP-DocBlockLayout",
       "size_mb": 123.9,
-      "files": 6,
-      "digest": "22af15cda5581d01"
+      "files": 3,
+      "digest": "f1466c155841a395"
+    },
+    {
+      "name": "PP-DocLayout-L",
+      "size_mb": 124.1,
+      "files": 3,
+      "digest": "c12057fc6c1f7713"
+    },
+    {
+      "name": "PP-DocLayoutV3",
+      "size_mb": 125.9,
+      "files": 5,
+      "digest": "9f228c9c2fe80c88"
     },
     {
       "name": "PP-DocLayout_plus-L",
@@ -36,8 +42,8 @@
     {
       "name": "PP-LCNet_x1_0_doc_ori",
       "size_mb": 6.6,
-      "files": 7,
-      "digest": "0fddf870a7dafd02"
+      "files": 6,
+      "digest": "b69615dbc58715f7"
     },
     {
       "name": "PP-LCNet_x1_0_table_cls",
@@ -48,14 +54,26 @@
     {
       "name": "PP-LCNet_x1_0_textline_ori",
       "size_mb": 6.5,
-      "files": 5,
-      "digest": "93328a112cd342c6"
+      "files": 7,
+      "digest": "4e9468cf6051519f"
+    },
+    {
+      "name": "PP-OCRv4_server_det",
+      "size_mb": 108.3,
+      "files": 3,
+      "digest": "54bc35389d4ddfd8"
+    },
+    {
+      "name": "PP-OCRv4_server_rec_doc",
+      "size_mb": 181.5,
+      "files": 4,
+      "digest": "1027b5c99042976b"
     },
     {
       "name": "PP-OCRv4_server_seal_det",
       "size_mb": 109.0,
-      "files": 6,
-      "digest": "78127a7f39615693"
+      "files": 3,
+      "digest": "786e45239a8c0786"
     },
     {
       "name": "PP-OCRv5_server_det",
@@ -72,14 +90,14 @@
     {
       "name": "PP-OCRv6_medium_det",
       "size_mb": 59.4,
-      "files": 3,
-      "digest": "ecbca725d12a38eb"
+      "files": 6,
+      "digest": "a80659e40b611868"
     },
     {
       "name": "PP-OCRv6_medium_rec",
       "size_mb": 73.3,
-      "files": 3,
-      "digest": "56a9ec7281b5ee4e"
+      "files": 5,
+      "digest": "74b1005fc62c01b5"
     },
     {
       "name": "RT-DETR-L_wired_table_cell_det",
@@ -114,8 +132,8 @@
     {
       "name": "UVDoc",
       "size_mb": 30.8,
-      "files": 3,
-      "digest": "c87c667a88da3b9f"
+      "files": 6,
+      "digest": "74a7b867ee9ddc69"
     }
   ]
 }

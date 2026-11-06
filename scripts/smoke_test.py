@@ -44,24 +44,68 @@ def gen_sample(path: Path) -> Path:
     return path
 
 
-def _run_one(spec, settings, args, image: Path, tmpdir: Path) -> list[str]:
+def gen_pdf_sample(path: Path) -> Path:
+    """生成一份带原生文本层的样例 PDF。
+
+    PDFINSPECTOR 走的是文本层快抽（不做 OCR），所以样例必须带可抽取的文字，
+    纯图片 PDF 会被判成扫描件而抽不出内容。
+    """
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((60, 90), "PaddleX OCR smoke test / PDF", fontsize=16)
+    page.insert_text((60, 130), "If you can read this line, PDF extraction works.", fontsize=11)
+    rows = [("Name", "Dept", "ID"), ("Zhang San", "R&D", "A001"), ("Li Si", "Finance", "B002")]
+    x0, y0 = 60, 200
+    for r, row in enumerate(rows):
+        for c, text in enumerate(row):
+            page.insert_text((x0 + c * 160, y0 + r * 24), text, fontsize=11)
+    for i in range(len(rows) + 1):
+        page.draw_line((x0, y0 - 18 + i * 24), (x0 + 480, y0 - 18 + i * 24))
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def _make_engine(settings, spec, mock: bool):
+    """按 spec.backend 走与线上一致的引擎分发（engine_pool 的同一套逻辑）。"""
+    from backend.engine_pool import EnginePool
+
+    previous = os.environ.get("PADDLEX_OCR_MOCK")
+    if mock:
+        os.environ["PADDLEX_OCR_MOCK"] = "1"
+    try:
+        pool = EnginePool(settings, [spec])
+    finally:
+        if previous is None:
+            os.environ.pop("PADDLEX_OCR_MOCK", None)
+        else:
+            os.environ["PADDLEX_OCR_MOCK"] = previous
+    return pool, pool.get(spec.id)
+
+
+def _run_one(spec, settings, args, image: Path, pdf: Path, tmpdir: Path) -> list[str]:
     """对单条产线跑：加载 -> 推理 -> 四种导出 -> docx/xlsx 回读。"""
     failures: list[str] = []
     label = f"{spec.label}（{spec.id}）" if spec is not None else "默认产线"
+    kind = getattr(spec, "kind", "")
+    backend = getattr(spec, "backend", "paddlex")
+    is_pdf = kind == "pdf_inspector"
     print("-" * 66)
-    print(f" 产线：{label}  [kind={getattr(spec, 'kind', '?')}]")
+    print(f" 产线：{label}  [kind={kind}]")
     print("-" * 66)
 
     started = time.time()
-    if args.mock:
-        from backend.mock_engine import MockEngine
+    try:
+        _pool, engine = _make_engine(settings, spec, args.mock)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[1/4] 产线创建失败：{exc}")
+        return [f"{label} 创建失败"]
 
-        engine = MockEngine(settings, spec)
+    if args.mock:
         print("[1/4] MOCK 引擎就绪")
     else:
-        from backend.engine import PaddleXEngine
-
-        engine = PaddleXEngine(settings, spec)
         try:
             engine.ensure_loaded()
         except Exception as exc:  # noqa: BLE001
@@ -69,17 +113,20 @@ def _run_one(spec, settings, args, image: Path, tmpdir: Path) -> list[str]:
             return [f"{label} 加载失败"]
         print(f"[1/4] 产线加载成功，用时 {time.time() - started:.1f}s")
         inventory = engine.model_inventory()
-        print(f"      模型数量 {len(inventory['models'])}，目录 {inventory['dir']}")
-        if not inventory["models"]:
+        print(f"      模型数量 {len(inventory.get('models') or [])}，目录 {inventory.get('dir')}")
+        if backend == "paddlex" and not inventory.get("models"):
             failures.append("模型目录为空（模型未随包分发）")
 
     try:
-        result = engine.predict_page(image, {})
+        if is_pdf:
+            result = engine.predict_pdf(pdf, {})
+        else:
+            result = engine.predict_page(image, {})
         tables = [b for b in result.blocks if b.type == "table" and b.table is not None]
         print(f"[2/4] 推理成功：{len(result.blocks)} 个块，表格 {len(tables)} 个，{result.elapsed_ms} ms")
         if not result.blocks:
             failures.append(f"{label} 推理结果为空")
-        if getattr(spec, "kind", "") == "table" and not tables:
+        if kind == "table" and not tables:
             # 表格产线在无表格页面会退回文本，这里只提示不判失败
             print("      提示：本页未检出表格（已退回 OCR 文本）")
     except Exception as exc:  # noqa: BLE001
@@ -92,7 +139,7 @@ def _run_one(spec, settings, args, image: Path, tmpdir: Path) -> list[str]:
 
     doc = Doc(
         name="smoke-test",
-        source_type="image",
+        source_type="pdf" if is_pdf else "image",
         pipeline=getattr(engine, "label", None) or getattr(engine, "pipeline_name", "?"),
     )
     doc.pages.append(Page(index=1, width=result.width, height=result.height, blocks=result.blocks))
@@ -192,10 +239,11 @@ def main() -> int:
     if not image.exists():
         print(f"[失败] 测试图片不存在：{image}")
         return 2
+    pdf = gen_pdf_sample(tmpdir / "sample.pdf")
 
     failures: list[str] = []
     for spec in selected:
-        failures += _run_one(spec, settings, args, image, tmpdir)
+        failures += _run_one(spec, settings, args, image, pdf, tmpdir)
 
     print("=" * 66)
     if failures:
